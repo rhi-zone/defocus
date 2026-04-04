@@ -192,9 +192,14 @@ function evalCall(op: string, args: Value[], env: Env): Value {
     }
 
     case "fn": {
-      // ["fn", [params...], body] → ["$fn", [params...], body]
+      // ["fn", [params...], body] → ["$fn", [params...], body, captured-bindings]
       if (args.length < 2) return null;
-      return ["$fn", args[0], args[1]];
+      // Capture current bindings as a record
+      const captured: { [key: string]: Value } = {};
+      for (const [k, v] of env.bindings) {
+        captured[k] = v;
+      }
+      return ["$fn", args[0], args[1], captured];
     }
 
     case "call": {
@@ -202,25 +207,128 @@ function evalCall(op: string, args: Value[], env: Env): Value {
       if (args.length === 0) return null;
       const func = evaluate(args[0], env);
       const fnArr = asArray(func);
-      if (!fnArr || fnArr.length !== 3 || fnArr[0] !== "$fn") return null;
+      if (!fnArr || fnArr.length < 3 || fnArr[0] !== "$fn") return null;
       const params = asArray(fnArr[1]);
       if (!params) return null;
       const body = fnArr[2];
 
-      // Evaluate arguments
+      // Evaluate arguments in the current environment
       const evaluatedArgs = args.slice(1).map((a) => evaluate(a, env));
 
-      // Push scope and bind params
-      const mark = envPushScope(env);
-      for (let i = 0; i < params.length; i++) {
-        const name = asStr(params[i] as Value);
-        if (name !== undefined) {
-          envBind(env, name, evaluatedArgs[i] ?? null);
+      // For closures (4-element $fn), replace entire binding environment
+      // with captured bindings for proper lexical scoping.
+      // For non-closures (3-element $fn, backward compat), just push a scope.
+      if (fnArr.length >= 4) {
+        const saved = env.bindings;
+        env.bindings = [];
+        const captured = asRecord(fnArr[3]);
+        if (captured) {
+          for (const [k, v] of Object.entries(captured)) {
+            envBind(env, k, v);
+          }
         }
+        for (let i = 0; i < params.length; i++) {
+          const name = asStr(params[i] as Value);
+          if (name !== undefined) {
+            envBind(env, name, evaluatedArgs[i] ?? null);
+          }
+        }
+        const result = evaluate(body, env);
+        env.bindings = saved;
+        return result;
+      } else {
+        const mark = envPushScope(env);
+        for (let i = 0; i < params.length; i++) {
+          const name = asStr(params[i] as Value);
+          if (name !== undefined) {
+            envBind(env, name, evaluatedArgs[i] ?? null);
+          }
+        }
+        const result = evaluate(body, env);
+        envPopScope(env, mark);
+        return result;
       }
-      const result = evaluate(body, env);
-      envPopScope(env, mark);
-      return result;
+    }
+
+    // Array operations
+    case "map": {
+      const arrVal = evaluate(args[0], env);
+      const func = evaluate(args[1], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      return arr.map((elem) => callFn(func, [elem], env));
+    }
+
+    case "filter": {
+      const arrVal = evaluate(args[0], env);
+      const func = evaluate(args[1], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      return arr.filter((elem) => isTruthy(callFn(func, [elem], env)));
+    }
+
+    case "reduce": {
+      const arrVal = evaluate(args[0], env);
+      const func = evaluate(args[1], env);
+      const init = evaluate(args[2], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      let acc = init;
+      for (const elem of arr) {
+        acc = callFn(func, [acc, elem], env);
+      }
+      return acc;
+    }
+
+    case "length": {
+      const val = evaluate(args[0], env);
+      if (Array.isArray(val)) return val.length;
+      if (typeof val === "string") return val.length;
+      return null;
+    }
+
+    // Record operations
+    case "keys": {
+      const val = evaluate(args[0], env);
+      const rec = asRecord(val);
+      if (!rec) return null;
+      return Object.keys(rec);
+    }
+
+    case "values": {
+      const val = evaluate(args[0], env);
+      const rec = asRecord(val);
+      if (!rec) return null;
+      return Object.values(rec);
+    }
+
+    case "has": {
+      const val = evaluate(args[0], env);
+      const key = evaluate(args[1], env);
+      const rec = asRecord(val);
+      const k = asStr(key);
+      if (!rec || k === undefined) return false;
+      return k in rec;
+    }
+
+    case "set-in": {
+      const val = evaluate(args[0], env);
+      const key = evaluate(args[1], env);
+      const value = evaluate(args[2], env);
+      const rec = asRecord(val);
+      const k = asStr(key);
+      if (!rec || k === undefined) return null;
+      return { ...rec, [k]: value };
+    }
+
+    case "remove-key": {
+      const val = evaluate(args[0], env);
+      const key = evaluate(args[1], env);
+      const rec = asRecord(val);
+      const k = asStr(key);
+      if (!rec || k === undefined) return null;
+      const { [k]: _, ...rest } = rec;
+      return rest;
     }
 
     case "attenuate": {
@@ -366,6 +474,45 @@ function evalCall(op: string, args: Value[], env: Env): Value {
 
     default:
       return null;
+  }
+}
+
+function callFn(func: Value, callArgs: Value[], env: Env): Value {
+  const fnArr = asArray(func);
+  if (!fnArr || fnArr.length < 3 || fnArr[0] !== "$fn") return null;
+  const params = asArray(fnArr[1]);
+  if (!params) return null;
+  const body = fnArr[2];
+
+  if (fnArr.length >= 4) {
+    const saved = env.bindings;
+    env.bindings = [];
+    const captured = asRecord(fnArr[3]);
+    if (captured) {
+      for (const [k, v] of Object.entries(captured)) {
+        envBind(env, k, v);
+      }
+    }
+    for (let i = 0; i < params.length; i++) {
+      const name = asStr(params[i] as Value);
+      if (name !== undefined) {
+        envBind(env, name, callArgs[i] ?? null);
+      }
+    }
+    const result = evaluate(body, env);
+    env.bindings = saved;
+    return result;
+  } else {
+    const mark = envPushScope(env);
+    for (let i = 0; i < params.length; i++) {
+      const name = asStr(params[i] as Value);
+      if (name !== undefined) {
+        envBind(env, name, callArgs[i] ?? null);
+      }
+    }
+    const result = evaluate(body, env);
+    envPopScope(env, mark);
+    return result;
   }
 }
 

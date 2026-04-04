@@ -259,13 +259,23 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
 
         // Functions
         "fn" => {
-            // ["fn", [params...], body] → ["$fn", [params...], body]
+            // ["fn", [params...], body] → ["$fn", [params...], body, captured-bindings]
             if args.len() < 2 {
                 return Value::Null;
             }
             let params = args[0].clone();
             let body = args[1].clone();
-            Value::Array(vec![Value::String("$fn".into()), params, body])
+            // Capture current bindings as a record
+            let mut captured = BTreeMap::new();
+            for (k, v) in &env.bindings {
+                captured.insert(k.clone(), v.clone());
+            }
+            Value::Array(vec![
+                Value::String("$fn".into()),
+                params,
+                body,
+                Value::Record(captured),
+            ])
         }
 
         "call" => {
@@ -277,7 +287,7 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             let Some(fn_arr) = func.as_array() else {
                 return Value::Null;
             };
-            if fn_arr.len() != 3 || fn_arr[0].as_str() != Some("$fn") {
+            if fn_arr.len() < 3 || fn_arr[0].as_str() != Some("$fn") {
                 return Value::Null;
             }
             let Some(params) = fn_arr[1].as_array() else {
@@ -285,20 +295,154 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             };
             let body = &fn_arr[2];
 
-            // Evaluate arguments
+            // Evaluate arguments in the current environment
             let evaluated_args: Vec<Value> = args[1..].iter().map(|a| eval(a, env)).collect();
 
-            // Push scope and bind params
-            let mark = env.push_scope();
-            for (i, param) in params.iter().enumerate() {
-                if let Some(name) = param.as_str() {
-                    let value = evaluated_args.get(i).cloned().unwrap_or(Value::Null);
-                    env.bind(name.to_string(), value);
+            // For closures (4-element $fn), replace the entire binding environment
+            // with captured bindings to ensure proper lexical scoping.
+            // For non-closures (3-element $fn, backward compat), just push a scope.
+            if fn_arr.len() >= 4 {
+                let saved = std::mem::take(&mut env.bindings);
+                if let Some(captured) = fn_arr[3].as_record() {
+                    for (k, v) in captured {
+                        env.bind(k.clone(), v.clone());
+                    }
                 }
+                for (i, param) in params.iter().enumerate() {
+                    if let Some(name) = param.as_str() {
+                        let value = evaluated_args.get(i).cloned().unwrap_or(Value::Null);
+                        env.bind(name.to_string(), value);
+                    }
+                }
+                let result = eval(body, env);
+                env.bindings = saved;
+                result
+            } else {
+                let mark = env.push_scope();
+                for (i, param) in params.iter().enumerate() {
+                    if let Some(name) = param.as_str() {
+                        let value = evaluated_args.get(i).cloned().unwrap_or(Value::Null);
+                        env.bind(name.to_string(), value);
+                    }
+                }
+                let result = eval(body, env);
+                env.pop_scope(mark);
+                result
             }
-            let result = eval(body, env);
-            env.pop_scope(mark);
-            result
+        }
+
+        // Array operations
+        "map" => {
+            let arr_val = eval(&args[0], env);
+            let func = eval(&args[1], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let result: Vec<Value> = arr
+                .iter()
+                .map(|elem| {
+                    call_fn(&func, std::slice::from_ref(elem), env)
+                })
+                .collect();
+            Value::Array(result)
+        }
+
+        "filter" => {
+            let arr_val = eval(&args[0], env);
+            let func = eval(&args[1], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let result: Vec<Value> = arr
+                .iter()
+                .filter(|elem| {
+                    let r = call_fn(&func, &[(*elem).clone()], env);
+                    r.is_truthy()
+                })
+                .cloned()
+                .collect();
+            Value::Array(result)
+        }
+
+        "reduce" => {
+            let arr_val = eval(&args[0], env);
+            let func = eval(&args[1], env);
+            let init = eval(&args[2], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let mut acc = init;
+            for elem in arr {
+                acc = call_fn(&func, &[acc, elem.clone()], env);
+            }
+            acc
+        }
+
+        "length" => {
+            let val = eval(&args[0], env);
+            match &val {
+                Value::Array(a) => Value::Int(a.len() as i64),
+                Value::String(s) => Value::Int(s.len() as i64),
+                _ => Value::Null,
+            }
+        }
+
+        // Record operations
+        "keys" => {
+            let val = eval(&args[0], env);
+            let Some(rec) = val.as_record() else {
+                return Value::Null;
+            };
+            Value::Array(rec.keys().map(|k| Value::String(k.clone())).collect())
+        }
+
+        "values" => {
+            let val = eval(&args[0], env);
+            let Some(rec) = val.as_record() else {
+                return Value::Null;
+            };
+            Value::Array(rec.values().cloned().collect())
+        }
+
+        "has" => {
+            let val = eval(&args[0], env);
+            let key = eval(&args[1], env);
+            let Some(rec) = val.as_record() else {
+                return Value::Bool(false);
+            };
+            let Some(k) = key.as_str() else {
+                return Value::Bool(false);
+            };
+            Value::Bool(rec.contains_key(k))
+        }
+
+        "set-in" => {
+            let val = eval(&args[0], env);
+            let key = eval(&args[1], env);
+            let value = eval(&args[2], env);
+            let Some(rec) = val.as_record() else {
+                return Value::Null;
+            };
+            let Some(k) = key.as_str() else {
+                return Value::Null;
+            };
+            let mut new_rec = rec.clone();
+            new_rec.insert(k.to_string(), value);
+            Value::Record(new_rec)
+        }
+
+        "remove-key" => {
+            let val = eval(&args[0], env);
+            let key = eval(&args[1], env);
+            let Some(rec) = val.as_record() else {
+                return Value::Null;
+            };
+            let Some(k) = key.as_str() else {
+                return Value::Null;
+            };
+            let mut new_rec = rec.clone();
+            new_rec.remove(k);
+            Value::Record(new_rec)
         }
 
         // Capability attenuation
@@ -484,6 +628,48 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
 
         // Unknown op — return null
         _ => Value::Null,
+    }
+}
+
+fn call_fn(func: &Value, call_args: &[Value], env: &mut Env) -> Value {
+    let Some(fn_arr) = func.as_array() else {
+        return Value::Null;
+    };
+    if fn_arr.len() < 3 || fn_arr[0].as_str() != Some("$fn") {
+        return Value::Null;
+    }
+    let Some(params) = fn_arr[1].as_array() else {
+        return Value::Null;
+    };
+    let body = &fn_arr[2];
+
+    if fn_arr.len() >= 4 {
+        let saved = std::mem::take(&mut env.bindings);
+        if let Some(captured) = fn_arr[3].as_record() {
+            for (k, v) in captured {
+                env.bind(k.clone(), v.clone());
+            }
+        }
+        for (i, param) in params.iter().enumerate() {
+            if let Some(name) = param.as_str() {
+                let value = call_args.get(i).cloned().unwrap_or(Value::Null);
+                env.bind(name.to_string(), value);
+            }
+        }
+        let result = eval(body, env);
+        env.bindings = saved;
+        result
+    } else {
+        let mark = env.push_scope();
+        for (i, param) in params.iter().enumerate() {
+            if let Some(name) = param.as_str() {
+                let value = call_args.get(i).cloned().unwrap_or(Value::Null);
+                env.bind(name.to_string(), value);
+            }
+        }
+        let result = eval(body, env);
+        env.pop_scope(mark);
+        result
     }
 }
 
@@ -734,6 +920,162 @@ mod tests {
         let mut env = Env::new(None);
         let result = eval(&handler, &mut env);
         assert_eq!(result, Value::Int(12));
+    }
+
+    #[test]
+    fn test_closure_captures_environment() {
+        let handler = val(json!([
+            "let", "x", 10,
+            ["let", "add-x", ["fn", ["y"], ["+", ["get", "x"], ["get", "y"]]],
+                ["call", ["get", "add-x"], 5]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Int(15));
+    }
+
+    #[test]
+    fn test_closure_doesnt_leak() {
+        // z is defined after the fn is created, so it should not be visible inside the fn
+        let handler = val(json!([
+            "let", "make-fn", ["fn", [], ["get", "z"]],
+            ["let", "z", 999,
+                ["call", ["get", "make-fn"]]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_map() {
+        let handler = val(json!([
+            "map",
+            [1, 2, 3],
+            ["fn", ["x"], ["*", ["get", "x"], 2]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::Int(2), Value::Int(4), Value::Int(6)])
+        );
+    }
+
+    #[test]
+    fn test_filter() {
+        let mut env = Env::new(None);
+        let handler = val(json!([
+            "filter",
+            [1, 2, 3, 4, 5],
+            ["fn", ["x"], [">", ["get", "x"], 2]]
+        ]));
+        let result = eval(&handler, &mut env);
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::Int(3), Value::Int(4), Value::Int(5)])
+        );
+    }
+
+    #[test]
+    fn test_reduce() {
+        let handler = val(json!([
+            "reduce",
+            [1, 2, 3, 4, 5],
+            ["fn", ["acc", "x"], ["+", ["get", "acc"], ["get", "x"]]],
+            0
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Int(15));
+    }
+
+    #[test]
+    fn test_length() {
+        let mut env = Env::new(None);
+        let arr_len = eval(&val(json!(["length", [1, 2, 3]])), &mut env);
+        assert_eq!(arr_len, Value::Int(3));
+
+        let str_len = eval(&val(json!(["length", "hello"])), &mut env);
+        assert_eq!(str_len, Value::Int(5));
+    }
+
+    #[test]
+    fn test_keys_values_has() {
+        let mut env = Env::new(None);
+
+        let keys = eval(
+            &val(json!(["keys", ["record", "a", 1, "b", 2]])),
+            &mut env,
+        );
+        assert_eq!(
+            keys,
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+            ])
+        );
+
+        let values = eval(
+            &val(json!(["values", ["record", "a", 1, "b", 2]])),
+            &mut env,
+        );
+        assert_eq!(values, Value::Array(vec![Value::Int(1), Value::Int(2)]));
+
+        let has_a = eval(
+            &val(json!(["has", ["record", "a", 1, "b", 2], "a"])),
+            &mut env,
+        );
+        assert_eq!(has_a, Value::Bool(true));
+
+        let has_c = eval(
+            &val(json!(["has", ["record", "a", 1, "b", 2], "c"])),
+            &mut env,
+        );
+        assert_eq!(has_c, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_set_in() {
+        let mut env = Env::new(None);
+        let result = eval(
+            &val(json!(["set-in", ["record", "a", 1], "b", 2])),
+            &mut env,
+        );
+        let expected = {
+            let mut m = BTreeMap::new();
+            m.insert("a".into(), Value::Int(1));
+            m.insert("b".into(), Value::Int(2));
+            Value::Record(m)
+        };
+        assert_eq!(result, expected);
+
+        // Update existing key
+        let result = eval(
+            &val(json!(["set-in", ["record", "a", 1], "a", 99])),
+            &mut env,
+        );
+        let expected = {
+            let mut m = BTreeMap::new();
+            m.insert("a".into(), Value::Int(99));
+            Value::Record(m)
+        };
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_remove_key() {
+        let mut env = Env::new(None);
+        let result = eval(
+            &val(json!(["remove-key", ["record", "a", 1, "b", 2], "a"])),
+            &mut env,
+        );
+        let expected = {
+            let mut m = BTreeMap::new();
+            m.insert("b".into(), Value::Int(2));
+            Value::Record(m)
+        };
+        assert_eq!(result, expected);
     }
 
     #[test]

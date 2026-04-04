@@ -9,3 +9,4 @@ export type { SaveBackend } from "./persist.js";
 export { MemoryBackend, Tee, Rolling, saveWorld, loadWorld } from "./persist.js";
 export type { Event, EventLog } from "./log.js";
 export { createEventLog, branchAt, replayFrom, forkAt } from "./log.js";
+export { LocalStorageBackend, IndexedDbBackend } from "./persist-browser.js";
