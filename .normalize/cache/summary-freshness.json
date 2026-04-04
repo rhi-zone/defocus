@@ -1,0 +1,141 @@
+{
+  "head": "b35caa9599146c6470dc00a49c7b2a377845af2c",
+  "dirs": {
+    "docs": {
+      "last_summary_commit": null,
+      "commits_count": 1
+    },
+    ".": {
+      "last_summary_commit": null,
+      "commits_count": 5
+    },
+    ".claude/worktrees/agent-acf629ec/ts/src": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    "ts/src": {
+      "last_summary_commit": null,
+      "commits_count": 4
+    },
+    ".claude/worktrees/agent-acf629ec/ts": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/.cargo": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/ts/src": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-acf629ec/.cargo": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".normalize": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    "crates/defocus-core": {
+      "last_summary_commit": null,
+      "commits_count": 5
+    },
+    ".claude/worktrees/agent-acf629ec/.github/workflows": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    "docs/.vitepress": {
+      "last_summary_commit": null,
+      "commits_count": 1
+    },
+    ".githooks": {
+      "last_summary_commit": null,
+      "commits_count": 1
+    },
+    ".claude/worktrees/agent-a1236594": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/.github/workflows": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-acf629ec/.githooks": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/crates/defocus-core": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    "ts": {
+      "last_summary_commit": null,
+      "commits_count": 4
+    },
+    ".claude/worktrees/agent-acf629ec/crates/defocus-core/tests": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/docs/.vitepress": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    "crates/defocus-core/tests": {
+      "last_summary_commit": null,
+      "commits_count": 3
+    },
+    ".claude/worktrees/agent-acf629ec/docs/.vitepress": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-acf629ec/crates/defocus-core": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-acf629ec": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-acf629ec/docs": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".github/workflows": {
+      "last_summary_commit": null,
+      "commits_count": 1
+    },
+    ".claude/worktrees/agent-a1236594/crates/defocus-core/tests": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/ts": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/docs": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".cargo": {
+      "last_summary_commit": null,
+      "commits_count": 1
+    },
+    ".claude/worktrees/agent-acf629ec/crates/defocus-core/src": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    "crates/defocus-core/src": {
+      "last_summary_commit": null,
+      "commits_count": 5
+    },
+    ".claude/worktrees/agent-a1236594/crates/defocus-core/src": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    },
+    ".claude/worktrees/agent-a1236594/.githooks": {
+      "last_summary_commit": null,
+      "commits_count": 0
+    }
+  }
+}

@@ -355,12 +355,17 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            let prototype = spec_rec
+                                .get("prototype")
+                                .and_then(|v| v.as_ref_id().or_else(|| v.as_str()))
+                                .map(String::from);
                             let object = Object {
                                 id: id.clone(),
                                 state,
                                 handlers,
                                 interface,
                                 children: Vec::new(),
+                                prototype,
                             };
                             env.effects.push(Effect::Spawn { object });
                             return Value::Ref(id);

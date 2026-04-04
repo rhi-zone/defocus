@@ -28,6 +28,7 @@ describe("World", () => {
       },
       interface: ["open", "close"],
       children: [],
+      prototype: null,
     };
 
     // A frame that tracks whether its door is open
@@ -39,6 +40,7 @@ describe("World", () => {
       },
       interface: ["door-opened"],
       children: [],
+      prototype: null,
     };
 
     world.add(door);
@@ -66,6 +68,7 @@ describe("World", () => {
       },
       interface: ["toggle"],
       children: [],
+      prototype: null,
     };
 
     world.add(light);
@@ -96,6 +99,7 @@ describe("World", () => {
       },
       interface: ["greet"],
       children: [],
+      prototype: null,
     };
 
     world.add(npc);
@@ -118,6 +122,7 @@ describe("World", () => {
       handlers: {},
       interface: ["ping", "query"],
       children: [],
+      prototype: null,
     };
 
     world.add(server);
@@ -200,6 +205,7 @@ describe("World", () => {
       },
       interface: ["produce"],
       children: [],
+      prototype: null,
     };
 
     world.add(factory);
@@ -231,6 +237,7 @@ describe("World", () => {
       },
       interface: ["open"],
       children: [],
+      prototype: null,
     };
 
     const frame: DefocusObject = {
@@ -241,6 +248,7 @@ describe("World", () => {
       },
       interface: ["door-opened"],
       children: [],
+      prototype: null,
     };
 
     world.add(door);
@@ -263,6 +271,7 @@ describe("World", () => {
       },
       interface: ["open"],
       children: [],
+      prototype: null,
     };
 
     const frame: DefocusObject = {
@@ -273,6 +282,7 @@ describe("World", () => {
       },
       interface: ["door-opened"],
       children: [],
+      prototype: null,
     };
 
     world.add(door);
@@ -294,6 +304,7 @@ describe("World", () => {
       },
       interface: ["trigger"],
       children: [],
+      prototype: null,
     };
 
     const b: DefocusObject = {
@@ -308,6 +319,7 @@ describe("World", () => {
       },
       interface: ["ping"],
       children: [],
+      prototype: null,
     };
 
     world.add(a);
@@ -334,6 +346,7 @@ describe("World", () => {
       },
       interface: ["ping"],
       children: [],
+      prototype: null,
     };
 
     world.add(obj);
@@ -378,6 +391,7 @@ describe("World", () => {
       },
       interface: ["create"],
       children: [],
+      prototype: null,
     };
 
     world.add(spawner);
@@ -418,6 +432,7 @@ describe("World", () => {
       },
       interface: ["create-and-ping"],
       children: [],
+      prototype: null,
     };
 
     world.add(spawner);
@@ -452,6 +467,7 @@ describe("World", () => {
       },
       interface: ["open"],
       children: [],
+      prototype: null,
     };
 
     world.add(room);
@@ -542,6 +558,7 @@ describe("World", () => {
       },
       interface: ["create"],
       children: [],
+      prototype: null,
     };
 
     world.add(spawner);
@@ -596,6 +613,7 @@ describe("World", () => {
       },
       interface: ["look"],
       children: [],
+      prototype: null,
     };
 
     // Door
@@ -636,6 +654,7 @@ describe("World", () => {
       },
       interface: ["look", "open", "close"],
       children: [],
+      prototype: null,
     };
 
     // NPC
@@ -663,6 +682,7 @@ describe("World", () => {
       },
       interface: ["look", "talk"],
       children: [],
+      prototype: null,
     };
 
     world.add(room);
@@ -710,5 +730,201 @@ describe("World", () => {
     replies = sendMsg(world, "local:npc", "talk", "weather");
     expect(replies.length).toBe(1);
     expect(replies[0]).toBe("She regards you silently.");
+  });
+
+  test("prototype: basic inheritance", () => {
+    const world = new World();
+
+    const proto: DefocusObject = {
+      id: "proto:greeter",
+      state: {},
+      handlers: {
+        greet: ["perform", "reply", ["get-in", ["get", "state"], "name"]],
+      },
+      interface: ["greet"],
+      children: [],
+      prototype: null,
+    };
+
+    const instance: DefocusObject = {
+      id: "local:instance",
+      state: { name: "Alice" },
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:greeter",
+    };
+
+    world.add(proto);
+    world.add(instance);
+
+    const replies = sendMsg(world, "local:instance", "greet");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("Alice");
+  });
+
+  test("prototype: override", () => {
+    const world = new World();
+
+    const proto: DefocusObject = {
+      id: "proto:greeter",
+      state: {},
+      handlers: {
+        greet: ["perform", "reply", "proto hello"],
+      },
+      interface: ["greet"],
+      children: [],
+      prototype: null,
+    };
+
+    const instance: DefocusObject = {
+      id: "local:instance",
+      state: {},
+      handlers: {
+        greet: ["perform", "reply", "instance hello"],
+      },
+      interface: ["greet"],
+      children: [],
+      prototype: "proto:greeter",
+    };
+
+    world.add(proto);
+    world.add(instance);
+
+    const replies = sendMsg(world, "local:instance", "greet");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("instance hello");
+  });
+
+  test("prototype: chain A -> B -> C", () => {
+    const world = new World();
+
+    const c: DefocusObject = {
+      id: "proto:c",
+      state: {},
+      handlers: {
+        greet: ["perform", "reply", "from C"],
+      },
+      interface: ["greet"],
+      children: [],
+      prototype: null,
+    };
+
+    const b: DefocusObject = {
+      id: "proto:b",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:c",
+    };
+
+    const a: DefocusObject = {
+      id: "local:a",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:b",
+    };
+
+    world.add(c);
+    world.add(b);
+    world.add(a);
+
+    const replies = sendMsg(world, "local:a", "greet");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("from C");
+  });
+
+  test("prototype: state isolation", () => {
+    const world = new World();
+
+    const proto: DefocusObject = {
+      id: "proto:greeter",
+      state: { name: "Proto" },
+      handlers: {
+        greet: ["perform", "reply", ["get-in", ["get", "state"], "name"]],
+      },
+      interface: ["greet"],
+      children: [],
+      prototype: null,
+    };
+
+    const instance: DefocusObject = {
+      id: "local:instance",
+      state: { name: "Instance" },
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:greeter",
+    };
+
+    world.add(proto);
+    world.add(instance);
+
+    const replies = sendMsg(world, "local:instance", "greet");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("Instance");
+  });
+
+  test("prototype: stub with prototype", () => {
+    const world = new World();
+
+    const proto: DefocusObject = {
+      id: "proto:greeter",
+      state: {},
+      handlers: {
+        greet: ["perform", "reply", "hello from proto"],
+      },
+      interface: ["greet"],
+      children: [],
+      prototype: null,
+    };
+
+    const instance: DefocusObject = {
+      id: "local:instance",
+      state: {},
+      handlers: {},
+      interface: ["greet"],
+      children: [],
+      prototype: "proto:greeter",
+    };
+
+    world.add(proto);
+    world.add(instance);
+
+    const replies = sendMsg(world, "local:instance", "greet");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("hello from proto");
+  });
+
+  test("prototype: cycle protection", () => {
+    const world = new World();
+
+    const a: DefocusObject = {
+      id: "local:a",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "local:b",
+    };
+
+    const b: DefocusObject = {
+      id: "local:b",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "local:a",
+    };
+
+    world.add(a);
+    world.add(b);
+
+    // Should not infinite loop
+    const replies = sendMsg(world, "local:a", "greet");
+    expect(replies.length).toBe(0);
   });
 });

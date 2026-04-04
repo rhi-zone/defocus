@@ -281,12 +281,15 @@ function evalCall(op: string, args: Value[], env: Env): Value {
                   if (s !== undefined) iface.push(s);
                 }
               }
+              const protoVal = spec.prototype;
+              const proto = asRef(protoVal) ?? asStr(protoVal) ?? null;
               const object: DefocusObject = {
                 id,
                 state,
                 handlers,
                 interface: iface,
                 children: [],
+                prototype: proto,
               };
               env.effects.push({ type: "spawn", object });
               return { $ref: id };

@@ -565,3 +565,298 @@ fn interactive_fiction_scenario() {
         Value::String("She regards you silently.".into())
     );
 }
+
+#[test]
+fn prototype_basic_inheritance() {
+    let mut world = World::new();
+
+    let proto = Object::new("proto:greeter").with_handler(
+        "greet",
+        val(json!(["perform", "reply", ["get-in", ["get", "state"], "name"]])),
+    );
+
+    let instance = Object::new("local:instance")
+        .with_state("name", "Alice")
+        .with_prototype("proto:greeter");
+
+    world.add(proto);
+    world.add(instance);
+
+    let replies = send(&mut world, "local:instance", "greet", Value::Null);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0], Value::String("Alice".into()));
+}
+
+#[test]
+fn prototype_override() {
+    let mut world = World::new();
+
+    let proto = Object::new("proto:greeter").with_handler(
+        "greet",
+        val(json!(["perform", "reply", "proto hello"])),
+    );
+
+    let instance = Object::new("local:instance")
+        .with_prototype("proto:greeter")
+        .with_handler("greet", val(json!(["perform", "reply", "instance hello"])));
+
+    world.add(proto);
+    world.add(instance);
+
+    let replies = send(&mut world, "local:instance", "greet", Value::Null);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0], Value::String("instance hello".into()));
+}
+
+#[test]
+fn prototype_chain() {
+    let mut world = World::new();
+
+    let c = Object::new("proto:c").with_handler(
+        "greet",
+        val(json!(["perform", "reply", "from C"])),
+    );
+    let b = Object::new("proto:b").with_prototype("proto:c");
+    let a = Object::new("local:a").with_prototype("proto:b");
+
+    world.add(c);
+    world.add(b);
+    world.add(a);
+
+    let replies = send(&mut world, "local:a", "greet", Value::Null);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0], Value::String("from C".into()));
+}
+
+#[test]
+fn prototype_state_isolation() {
+    let mut world = World::new();
+
+    let proto = Object::new("proto:greeter")
+        .with_state("name", "Proto")
+        .with_handler(
+            "greet",
+            val(json!(["perform", "reply", ["get-in", ["get", "state"], "name"]])),
+        );
+
+    let instance = Object::new("local:instance")
+        .with_state("name", "Instance")
+        .with_prototype("proto:greeter");
+
+    world.add(proto);
+    world.add(instance);
+
+    let replies = send(&mut world, "local:instance", "greet", Value::Null);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0], Value::String("Instance".into()));
+}
+
+#[test]
+fn prototype_stub_with_prototype() {
+    let mut world = World::new();
+
+    let proto = Object::new("proto:greeter").with_handler(
+        "greet",
+        val(json!(["perform", "reply", "hello from proto"])),
+    );
+
+    let instance = Object::stub("local:instance", vec!["greet".into()])
+        .with_prototype("proto:greeter");
+
+    world.add(proto);
+    world.add(instance);
+
+    let replies = send(&mut world, "local:instance", "greet", Value::Null);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0], Value::String("hello from proto".into()));
+}
+
+#[test]
+fn prototype_cycle_protection() {
+    let mut world = World::new();
+
+    let a = Object::new("local:a").with_prototype("local:b");
+    let b = Object::new("local:b").with_prototype("local:a");
+
+    world.add(a);
+    world.add(b);
+
+    // Should not infinite loop — neither has a handler for "greet"
+    let replies = send(&mut world, "local:a", "greet", Value::Null);
+    assert_eq!(replies.len(), 0);
+}
+
+// --- Event Log Tests ---
+
+use defocus_core::log::EventLog;
+
+fn make_counter_world() -> World {
+    let mut world = World::new();
+    let counter = Object::new("local:counter")
+        .with_state("count", Value::Int(0))
+        .with_handler(
+            "increment",
+            val(json!([
+                "do",
+                ["perform", "set", "count", ["+", ["get-in", ["get", "state"], "count"], 1]],
+                ["perform", "reply", ["+", ["get-in", ["get", "state"], "count"], 1]]
+            ])),
+        );
+    world.add(counter);
+    world
+}
+
+#[test]
+fn log_captures_events() {
+    let mut world = make_counter_world();
+    world.enable_logging();
+
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+
+    let log = world.take_log().unwrap();
+    assert_eq!(log.events.len(), 3);
+
+    assert_eq!(log.events[0].target, "local:counter");
+    assert_eq!(log.events[0].message.verb, "increment");
+    assert_eq!(log.events[0].sender, None);
+    assert_eq!(log.events[0].replies, vec![Value::Int(1)]);
+
+    assert_eq!(log.events[1].replies, vec![Value::Int(2)]);
+    assert_eq!(log.events[2].replies, vec![Value::Int(3)]);
+
+    // Log was taken — should be None now
+    assert!(world.take_log().is_none());
+}
+
+#[test]
+fn replay_produces_same_state() {
+    // Run with logging
+    let mut world = make_counter_world();
+    let snapshot = world.clone();
+    world.enable_logging();
+
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+
+    let log = world.take_log().unwrap();
+
+    // Replay on a fresh copy
+    let (replayed, _replies) = EventLog::replay_from(&snapshot, &log);
+
+    assert_eq!(
+        replayed.objects["local:counter"].state["count"],
+        world.objects["local:counter"].state["count"]
+    );
+    assert_eq!(
+        replayed.objects["local:counter"].state["count"],
+        Value::Int(3)
+    );
+}
+
+#[test]
+fn branch_at_point() {
+    let mut world = make_counter_world();
+    let snapshot = world.clone();
+    world.enable_logging();
+
+    for _ in 0..5 {
+        send(&mut world, "local:counter", "increment", Value::Null);
+    }
+    let log = world.take_log().unwrap();
+    assert_eq!(log.events.len(), 5);
+
+    // Branch at message 3
+    let (branched, truncated_log) = snapshot.fork_at(&log, 3);
+
+    assert_eq!(truncated_log.events.len(), 3);
+    assert_eq!(
+        branched.objects["local:counter"].state["count"],
+        Value::Int(3)
+    );
+}
+
+#[test]
+fn branch_and_diverge() {
+    let mut world = make_counter_world();
+
+    // Also add a second object to make divergence interesting
+    let npc = Object::new("local:npc")
+        .with_state("mood", "neutral")
+        .with_handler(
+            "greet",
+            val(json!([
+                "do",
+                ["perform", "set", "mood", ["get", "payload"]],
+                ["perform", "reply", ["get", "payload"]]
+            ])),
+        );
+    world.add(npc);
+
+    let snapshot = world.clone();
+    world.enable_logging();
+
+    // Send 3 increment messages
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+
+    let log = world.take_log().unwrap();
+
+    // Branch at message 3 (all messages) and send a different 4th message
+    let (mut branched, _) = snapshot.fork_at(&log, 3);
+    assert_eq!(
+        branched.objects["local:counter"].state["count"],
+        Value::Int(3)
+    );
+
+    // Diverge: send a greet to npc instead of another increment
+    send(
+        &mut branched,
+        "local:npc",
+        "greet",
+        Value::String("happy".into()),
+    );
+
+    // Continue original: send a 4th increment
+    send(&mut world, "local:counter", "increment", Value::Null);
+
+    // Verify divergence
+    assert_eq!(
+        world.objects["local:counter"].state["count"],
+        Value::Int(4)
+    );
+    assert_eq!(
+        branched.objects["local:counter"].state["count"],
+        Value::Int(3)
+    );
+    assert_eq!(
+        branched.objects["local:npc"].state["mood"],
+        Value::String("happy".into())
+    );
+    assert_eq!(
+        world.objects["local:npc"].state["mood"],
+        Value::String("neutral".into())
+    );
+}
+
+#[test]
+fn event_log_serialization_roundtrip() {
+    let mut world = make_counter_world();
+    world.enable_logging();
+
+    send(&mut world, "local:counter", "increment", Value::Null);
+    send(&mut world, "local:counter", "increment", Value::Null);
+
+    let log = world.take_log().unwrap();
+    let json = serde_json::to_string(&log).unwrap();
+    let restored: EventLog = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.events.len(), 2);
+    assert_eq!(restored.events[0].target, "local:counter");
+    assert_eq!(restored.events[0].message.verb, "increment");
+    assert_eq!(restored.events[0].replies, vec![Value::Int(1)]);
+    assert_eq!(restored.events[1].replies, vec![Value::Int(2)]);
+}

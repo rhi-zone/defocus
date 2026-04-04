@@ -1,3 +1,4 @@
+use crate::log::{Event, EventLog};
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -18,6 +19,8 @@ pub struct Object {
     pub handlers: BTreeMap<String, Expr>,
     pub interface: Vec<String>,
     pub children: Vec<Identity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prototype: Option<Identity>,
 }
 
 impl Object {
@@ -28,6 +31,7 @@ impl Object {
             handlers: BTreeMap::new(),
             interface: Vec::new(),
             children: Vec::new(),
+            prototype: None,
         }
     }
 
@@ -50,6 +54,11 @@ impl Object {
         self
     }
 
+    pub fn with_prototype(mut self, id: impl Into<Identity>) -> Self {
+        self.prototype = Some(id.into());
+        self
+    }
+
     pub fn stub(id: impl Into<Identity>, verbs: Vec<String>) -> Self {
         Object {
             id: id.into(),
@@ -57,6 +66,7 @@ impl Object {
             handlers: BTreeMap::new(),
             interface: verbs,
             children: Vec::new(),
+            prototype: None,
         }
     }
 }
@@ -75,6 +85,8 @@ pub struct World {
     pub objects: BTreeMap<Identity, Object>,
     #[serde(skip)]
     pub queue: VecDeque<(Identity, Message, Option<Identity>)>,
+    #[serde(skip)]
+    pub log: Option<EventLog>,
 }
 
 impl World {
@@ -82,6 +94,7 @@ impl World {
         World {
             objects: BTreeMap::new(),
             queue: VecDeque::new(),
+            log: None,
         }
     }
 
@@ -93,20 +106,59 @@ impl World {
         self.queue.push_back((to, message, None));
     }
 
+    /// Resolve a handler for a verb by walking the prototype chain.
+    /// Returns the handler expression if found. Guards against cycles.
+    fn resolve_handler(&self, start_id: &Identity, verb: &str) -> Option<Expr> {
+        let mut visited = std::collections::HashSet::new();
+        let mut current_id = start_id.clone();
+        loop {
+            if !visited.insert(current_id.clone()) {
+                // Cycle detected
+                return None;
+            }
+            let obj = self.objects.get(&current_id)?;
+            if let Some(handler) = obj.handlers.get(verb) {
+                return Some(handler.clone());
+            }
+            match &obj.prototype {
+                Some(proto_id) => current_id = proto_id.clone(),
+                None => return None,
+            }
+        }
+    }
+
     /// Process the next queued message. Returns `None` if the queue is empty,
     /// or `Some(replies)` with any Reply values produced by this step.
     pub fn step(&mut self) -> Option<Vec<Value>> {
         let (target_id, message, sender) = self.queue.pop_front()?;
 
         let Some(object) = self.objects.get(&target_id) else {
+            if let Some(ref mut log) = self.log {
+                log.events.push(Event {
+                    target: target_id,
+                    message,
+                    sender,
+                    replies: Vec::new(),
+                });
+            }
             return Some(Vec::new());
         };
 
-        let Some(handler) = object.handlers.get(&message.verb).cloned() else {
-            return Some(Vec::new());
-        };
-
+        // Walk prototype chain to find handler, but use the original object's state
         let state_value = Value::Record(object.state.clone());
+
+        let Some(handler) = self.resolve_handler(&target_id, &message.verb) else {
+            if let Some(ref mut log) = self.log {
+                log.events.push(Event {
+                    target: target_id,
+                    message,
+                    sender,
+                    replies: Vec::new(),
+                });
+            }
+            return Some(Vec::new());
+        };
+
         let effects = crate::eval::eval_handler(
             &handler,
             &message.payload,
@@ -136,6 +188,15 @@ impl World {
                     replies.push(value);
                 }
             }
+        }
+
+        if let Some(ref mut log) = self.log {
+            log.events.push(Event {
+                target: target_id,
+                message,
+                sender,
+                replies: replies.clone(),
+            });
         }
 
         Some(replies)
@@ -179,6 +240,12 @@ impl World {
                 "children".to_string(),
                 serde_json::to_value(&obj.children).unwrap(),
             );
+            if let Some(proto) = &obj.prototype {
+                entry.insert(
+                    "prototype".to_string(),
+                    serde_json::to_value(proto).unwrap(),
+                );
+            }
             objects.insert(id.clone(), serde_json::Value::Object(entry));
         }
 
@@ -239,12 +306,19 @@ impl World {
                 .map_err(|e| format!("invalid children for {id}: {e}"))?
                 .unwrap_or_default();
 
+            let prototype: Option<Identity> = obj_map
+                .get("prototype")
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()
+                .map_err(|e| format!("invalid prototype for {id}: {e}"))?;
+
             world.add(Object {
                 id: id.clone(),
                 state,
                 handlers,
                 interface,
                 children,
+                prototype,
             });
         }
 

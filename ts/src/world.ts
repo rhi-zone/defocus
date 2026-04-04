@@ -1,5 +1,6 @@
 import type { Value, Expr, Identity } from "./value.js";
 import { evalHandler } from "./eval.js";
+import type { Event, EventLog } from "./log.js";
 
 export interface Message {
   verb: string;
@@ -12,6 +13,7 @@ export interface DefocusObject {
   handlers: { [verb: string]: Expr };
   interface: string[];
   children: Identity[];
+  prototype: Identity | null;
 }
 
 export type Effect =
@@ -22,16 +24,17 @@ export type Effect =
   | { type: "reply"; value: Value };
 
 export function createObject(id: Identity): DefocusObject {
-  return { id, state: {}, handlers: {}, interface: [], children: [] };
+  return { id, state: {}, handlers: {}, interface: [], children: [], prototype: null };
 }
 
 export function stub(id: Identity, verbs: string[]): DefocusObject {
-  return { id, state: {}, handlers: {}, interface: verbs, children: [] };
+  return { id, state: {}, handlers: {}, interface: verbs, children: [], prototype: null };
 }
 
 export class World {
   objects = new Map<Identity, DefocusObject>();
   queue: Array<[Identity, Message, Identity | undefined]> = [];
+  log: EventLog | null = null;
 
   add(object: DefocusObject): void {
     this.objects.set(object.id, object);
@@ -39,6 +42,21 @@ export class World {
 
   send(to: Identity, message: Message): void {
     this.queue.push([to, message, undefined]);
+  }
+
+  /** Resolve a handler for a verb by walking the prototype chain. */
+  private resolveHandler(startId: Identity, verb: string): Expr | undefined {
+    const visited = new Set<Identity>();
+    let currentId: Identity | null = startId;
+    while (currentId !== null) {
+      if (visited.has(currentId)) return undefined; // cycle
+      visited.add(currentId);
+      const obj = this.objects.get(currentId);
+      if (!obj) return undefined;
+      if (verb in obj.handlers) return obj.handlers[verb];
+      currentId = obj.prototype;
+    }
+    return undefined;
   }
 
   /** Process the next queued message. Returns undefined if queue is empty,
@@ -49,10 +67,21 @@ export class World {
 
     const [targetId, message, sender] = entry;
     const object = this.objects.get(targetId);
-    if (!object) return [];
+    if (!object) {
+      if (this.log) {
+        this.log.events.push({ target: targetId, message, sender, replies: [] });
+      }
+      return [];
+    }
 
-    const handler = object.handlers[message.verb];
-    if (!handler) return [];
+    // Walk prototype chain, but use original object's state
+    const handler = this.resolveHandler(targetId, message.verb);
+    if (handler === undefined) {
+      if (this.log) {
+        this.log.events.push({ target: targetId, message, sender, replies: [] });
+      }
+      return [];
+    }
 
     const effects = evalHandler(
       handler,
@@ -85,6 +114,10 @@ export class World {
       }
     }
 
+    if (this.log) {
+      this.log.events.push({ target: targetId, message, sender, replies: [...replies] });
+    }
+
     return replies;
   }
 
@@ -108,12 +141,16 @@ export class World {
   toJSON(): object {
     const objects: { [id: string]: object } = {};
     for (const [id, obj] of this.objects) {
-      objects[id] = {
+      const entry: { [key: string]: Value } = {
         state: obj.state,
         handlers: obj.handlers,
         interface: obj.interface,
         children: obj.children,
       };
+      if (obj.prototype !== null) {
+        entry.prototype = obj.prototype;
+      }
+      objects[id] = entry;
     }
     return { version: 1, objects };
   }
@@ -124,6 +161,7 @@ export class World {
       handlers?: { [verb: string]: Expr };
       interface?: string[];
       children?: Identity[];
+      prototype?: Identity | null;
     } } };
 
     if (root.version !== 1) {
@@ -141,9 +179,56 @@ export class World {
         handlers: entry.handlers ?? {},
         interface: entry.interface ?? [],
         children: entry.children ?? [],
+        prototype: entry.prototype ?? null,
       };
       world.add(obj);
     }
     return world;
+  }
+
+  /** Enable event logging. Future step() calls will record events. */
+  enableLogging(): void {
+    if (!this.log) {
+      this.log = { events: [] };
+    }
+  }
+
+  /** Disable event logging. */
+  disableLogging(): void {
+    this.log = null;
+  }
+
+  /** Take the current log, leaving null in its place. */
+  takeLog(): EventLog | null {
+    const log = this.log;
+    this.log = null;
+    return log;
+  }
+
+  /** Deep clone the world (objects only, no queue or log). */
+  clone(): World {
+    return World.fromJSON(JSON.parse(JSON.stringify(this.toJSON())));
+  }
+
+  /** Re-dispatch all messages from a log in order, collecting all replies. */
+  replay(log: EventLog): Value[] {
+    const allReplies: Value[] = [];
+    for (const event of log.events) {
+      this.queue.push([event.target, event.message, event.sender]);
+      let replies: Value[] | undefined;
+      while ((replies = this.step()) !== undefined) {
+        allReplies.push(...replies);
+      }
+    }
+    return allReplies;
+  }
+
+  /** Given this world (pre-log) and a log, replay up to index,
+   *  return the new world state and the truncated log. */
+  forkAt(log: EventLog, index: number): [World, EventLog] {
+    const truncated: EventLog = { events: log.events.slice(0, index) };
+    const w = this.clone();
+    w.replay(truncated);
+    return [w, truncated];
   }
 }
