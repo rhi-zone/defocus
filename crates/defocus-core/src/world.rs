@@ -220,13 +220,14 @@ impl World {
             return Some(Vec::new());
         };
 
-        let effects = crate::eval::eval_handler_with_llm(
+        let effects = crate::eval::eval_handler_with_world(
             &handler,
             &message.payload,
             &state_value,
             &target_id,
             sender.as_deref(),
             self.llm.as_deref(),
+            Some(&self.objects),
         );
 
         let mut replies = Vec::new();
@@ -884,6 +885,85 @@ mod tests {
         assert_eq!(
             shopkeeper.state.get("last-response"),
             Some(&Value::String("That'll be 10 gold.".into()))
+        );
+    }
+
+    #[test]
+    fn test_query_from_handler() {
+        let mut world = World::new();
+
+        // Two hostile NPCs and one friendly
+        let hostile1 = Object::new("npc:orc")
+            .with_state("mood", "hostile")
+            .with_handler(
+                "alert",
+                val(serde_json::json!(["perform", "set", "alerted", true])),
+            );
+        let hostile2 = Object::new("npc:goblin")
+            .with_state("mood", "hostile")
+            .with_handler(
+                "alert",
+                val(serde_json::json!(["perform", "set", "alerted", true])),
+            );
+        let friendly = Object::new("npc:merchant")
+            .with_state("mood", "friendly")
+            .with_handler(
+                "alert",
+                val(serde_json::json!(["perform", "set", "alerted", true])),
+            );
+
+        // Player handler: on "shout", query for hostile NPCs, send "alert" to each
+        let player = Object::new("player").with_handler(
+            "shout",
+            val(serde_json::json!([
+                "let", "hostiles",
+                ["query", {"state": {"mood": "hostile"}, "interface": ["array", "alert"]}],
+                ["do",
+                    ["perform", "set", "found-count",
+                        ["length", ["get", "hostiles"]]],
+                    ["map", ["get", "hostiles"],
+                        ["fn", ["target"],
+                            ["perform", "send", ["get", "target"], "alert", null]]]]
+            ])),
+        );
+
+        world.add(hostile1);
+        world.add(hostile2);
+        world.add(friendly);
+        world.add(player);
+
+        world.send(
+            "player".into(),
+            Message {
+                verb: "shout".into(),
+                payload: Value::Null,
+            },
+        );
+        world.drain(100);
+
+        // Player found 2 hostile NPCs
+        assert_eq!(
+            world.objects.get("player").unwrap().state.get("found-count"),
+            Some(&Value::Int(2))
+        );
+        // Both hostile NPCs got alerted
+        assert_eq!(
+            world.objects.get("npc:orc").unwrap().state.get("alerted"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            world.objects.get("npc:goblin").unwrap().state.get("alerted"),
+            Some(&Value::Bool(true))
+        );
+        // Friendly NPC was not alerted
+        assert_eq!(
+            world
+                .objects
+                .get("npc:merchant")
+                .unwrap()
+                .state
+                .get("alerted"),
+            None
         );
     }
 }

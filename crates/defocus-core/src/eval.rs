@@ -7,6 +7,7 @@ struct Env<'a> {
     bindings: Vec<(String, Value)>,
     effects: Vec<Effect>,
     llm: Option<&'a dyn LlmProvider>,
+    world_objects: Option<&'a BTreeMap<Identity, Object>>,
 }
 
 impl<'a> Env<'a> {
@@ -15,6 +16,7 @@ impl<'a> Env<'a> {
             bindings: Vec::new(),
             effects: Vec::new(),
             llm,
+            world_objects: None,
         }
     }
 
@@ -58,7 +60,20 @@ pub fn eval_handler_with_llm(
     sender: Option<&str>,
     llm: Option<&dyn LlmProvider>,
 ) -> Vec<Effect> {
+    eval_handler_with_world(handler, payload, state, self_id, sender, llm, None)
+}
+
+pub fn eval_handler_with_world(
+    handler: &Expr,
+    payload: &Value,
+    state: &Value,
+    self_id: &str,
+    sender: Option<&str>,
+    llm: Option<&dyn LlmProvider>,
+    world_objects: Option<&BTreeMap<Identity, Object>>,
+) -> Vec<Effect> {
     let mut env = Env::new(llm);
+    env.world_objects = world_objects;
     env.bind(
         "self".into(),
         Value::Ref {
@@ -919,6 +934,131 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             Value::Array(reversed)
         }
 
+        // Query: ["query", filter-record]
+        "query" => {
+            let Some(world_objects) = env.world_objects else {
+                return Value::Array(vec![]);
+            };
+            let filter = eval(&args[0], env);
+            let filter_rec = match filter.as_record() {
+                Some(r) => r.clone(),
+                None => return Value::Array(vec![]),
+            };
+
+            let state_filter = filter_rec.get("state").and_then(|v| v.as_record()).cloned();
+            let interface_filter: Option<Vec<String>> = filter_rec
+                .get("interface")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                });
+            let prototype_filter = filter_rec
+                .get("prototype")
+                .and_then(|v| v.as_ref_id().or_else(|| v.as_str()))
+                .map(String::from);
+            let children_of_filter = filter_rec
+                .get("children-of")
+                .and_then(|v| v.as_ref_id().or_else(|| v.as_str()))
+                .map(String::from);
+            let has_state_filter: Option<Vec<String>> = filter_rec
+                .get("has-state")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                });
+
+            let mut results = Vec::new();
+            for (id, obj) in world_objects {
+                // state filter: all specified keys must have equal values
+                if let Some(ref state_match) = state_filter {
+                    let mut matches = true;
+                    for (k, v) in state_match {
+                        match obj.state.get(k) {
+                            Some(actual) if actual == v => {}
+                            _ => {
+                                matches = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !matches {
+                        continue;
+                    }
+                }
+
+                // interface filter: object must handle all specified verbs
+                if let Some(ref verbs) = interface_filter {
+                    let mut matches = true;
+                    for verb in verbs {
+                        if !obj.interface.contains(verb) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if !matches {
+                        continue;
+                    }
+                }
+
+                // prototype filter: walk up prototype chain
+                if let Some(ref proto_id) = prototype_filter {
+                    let mut found = false;
+                    let mut visited = std::collections::HashSet::new();
+                    let mut current = obj.prototype.clone();
+                    while let Some(ref cur_id) = current {
+                        if !visited.insert(cur_id.clone()) {
+                            break; // cycle
+                        }
+                        if cur_id == proto_id {
+                            found = true;
+                            break;
+                        }
+                        current = world_objects
+                            .get(cur_id)
+                            .and_then(|o| o.prototype.clone());
+                    }
+                    if !found {
+                        continue;
+                    }
+                }
+
+                // children-of filter: object must be a child of the specified parent
+                if let Some(ref parent_id) = children_of_filter {
+                    let is_child = world_objects
+                        .get(parent_id)
+                        .map(|parent| parent.children.contains(id))
+                        .unwrap_or(false);
+                    if !is_child {
+                        continue;
+                    }
+                }
+
+                // has-state filter: all specified keys must exist
+                if let Some(ref keys) = has_state_filter {
+                    let mut matches = true;
+                    for key in keys {
+                        if !obj.state.contains_key(key) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if !matches {
+                        continue;
+                    }
+                }
+
+                results.push(Value::Ref {
+                    id: id.clone(),
+                    verbs: None,
+                });
+            }
+            Value::Array(results)
+        }
+
         // LLM call: ["llm", prompt-expr]
         "llm" => {
             if let Some(provider) = env.llm {
@@ -1591,5 +1731,165 @@ mod tests {
 
         let effects = eval_handler(&handler, &Value::Null, &state, "", None);
         assert!(effects.is_empty()); // No effects, just reads
+    }
+
+    fn make_query_world() -> BTreeMap<Identity, Object> {
+        let mut objects = BTreeMap::new();
+
+        let npc1 = Object::new("npc:alice")
+            .with_state("mood", "hostile")
+            .with_state("description", "A hostile warrior")
+            .with_handler("talk", val(json!(["perform", "reply", "Hello"])))
+            .with_handler("fight", val(json!(null)))
+            .with_prototype("proto:npc");
+        objects.insert(npc1.id.clone(), npc1);
+
+        let npc2 = Object::new("npc:bob")
+            .with_state("mood", "friendly")
+            .with_state("description", "A friendly merchant")
+            .with_handler("talk", val(json!(["perform", "reply", "Hi"])))
+            .with_prototype("proto:npc");
+        objects.insert(npc2.id.clone(), npc2);
+
+        let npc3 = Object::new("npc:charlie")
+            .with_state("mood", "hostile")
+            .with_handler("fight", val(json!(null)))
+            .with_prototype("proto:npc");
+        objects.insert(npc3.id.clone(), npc3);
+
+        let item1 = Object::new("item:sword")
+            .with_state("damage", Value::Int(10))
+            .with_prototype("proto:weapon");
+        objects.insert(item1.id.clone(), item1);
+
+        let item2 = Object::new("item:shield")
+            .with_state("defense", Value::Int(5))
+            .with_prototype("proto:armor");
+        objects.insert(item2.id.clone(), item2);
+
+        // Proto chain: proto:weapon -> proto:item
+        let proto_npc = Object::new("proto:npc");
+        objects.insert(proto_npc.id.clone(), proto_npc);
+
+        let proto_item = Object::new("proto:item");
+        objects.insert(proto_item.id.clone(), proto_item);
+
+        let proto_weapon = Object::new("proto:weapon").with_prototype("proto:item");
+        objects.insert(proto_weapon.id.clone(), proto_weapon);
+
+        let proto_armor = Object::new("proto:armor").with_prototype("proto:item");
+        objects.insert(proto_armor.id.clone(), proto_armor);
+
+        // Room with children
+        let mut room = Object::new("room:tavern")
+            .with_state("description", "A noisy tavern");
+        room.children = vec!["npc:alice".into(), "npc:bob".into()];
+        objects.insert(room.id.clone(), room);
+
+        objects
+    }
+
+    #[test]
+    fn test_query_by_state() {
+        let objects = make_query_world();
+        let handler = val(json!(["query", {"state": {"mood": "hostile"}}]));
+        let effects = eval_handler_with_world(
+            &handler, &Value::Null, &Value::Null, "", None, None, Some(&objects),
+        );
+        assert!(effects.is_empty());
+        // Evaluate directly to get the result
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let ids: Vec<&str> = arr.iter().filter_map(|v| v.as_ref_id()).collect();
+        assert!(ids.contains(&"npc:alice"));
+        assert!(ids.contains(&"npc:charlie"));
+    }
+
+    #[test]
+    fn test_query_by_interface() {
+        let objects = make_query_world();
+        let handler = val(json!(["query", {"interface": ["array", "talk"]}]));
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        let ids: Vec<&str> = arr.iter().filter_map(|v| v.as_ref_id()).collect();
+        assert!(ids.contains(&"npc:alice"));
+        assert!(ids.contains(&"npc:bob"));
+        assert!(!ids.contains(&"npc:charlie"));
+    }
+
+    #[test]
+    fn test_query_by_prototype() {
+        let objects = make_query_world();
+        // Find all objects with proto:item in their chain
+        // (sword, shield, and the proto:weapon, proto:armor prototypes themselves)
+        let handler = val(json!(["query", {"prototype": "proto:item"}]));
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        let ids: Vec<&str> = arr.iter().filter_map(|v| v.as_ref_id()).collect();
+        assert!(ids.contains(&"item:sword"));
+        assert!(ids.contains(&"item:shield"));
+        assert!(ids.contains(&"proto:weapon"));
+        assert!(ids.contains(&"proto:armor"));
+        assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn test_query_by_has_state() {
+        let objects = make_query_world();
+        let handler = val(json!(["query", {"has-state": ["array", "description"]}]));
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        let ids: Vec<&str> = arr.iter().filter_map(|v| v.as_ref_id()).collect();
+        assert!(ids.contains(&"npc:alice"));
+        assert!(ids.contains(&"npc:bob"));
+        assert!(ids.contains(&"room:tavern"));
+        assert!(!ids.contains(&"npc:charlie"));
+    }
+
+    #[test]
+    fn test_query_combined() {
+        let objects = make_query_world();
+        // Hostile NPCs that can talk
+        let handler = val(json!(["query", {"state": {"mood": "hostile"}, "interface": ["array", "talk"]}]));
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0].as_ref_id(), Some("npc:alice"));
+    }
+
+    #[test]
+    fn test_query_empty_result() {
+        let objects = make_query_world();
+        let handler = val(json!(["query", {"state": {"mood": "scared"}}]));
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        assert!(arr.is_empty());
+    }
+
+    #[test]
+    fn test_query_children_of() {
+        let objects = make_query_world();
+        let handler = val(json!(["query", {"children-of": "room:tavern"}]));
+        let mut env = Env::new(None);
+        env.world_objects = Some(&objects);
+        let result = eval(&handler, &mut env);
+        let arr = result.as_array().unwrap();
+        let ids: Vec<&str> = arr.iter().filter_map(|v| v.as_ref_id()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"npc:alice"));
+        assert!(ids.contains(&"npc:bob"));
     }
 }

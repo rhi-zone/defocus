@@ -1272,4 +1272,330 @@ describe("World", () => {
     expect(msgs[0][0]).toBe("local:obj");
     expect(msgs[0][1].verb).toBe("ping");
   });
+
+  // --- Query Tests ---
+
+  function makeQueryWorld(): World {
+    const world = new World();
+
+    world.add({
+      id: "npc:alice",
+      state: { mood: "hostile", description: "A hostile warrior" },
+      handlers: {
+        talk: ["perform", "reply", "Hello"],
+        fight: null,
+      },
+      interface: ["talk", "fight"],
+      children: [],
+      prototype: "proto:npc",
+    });
+
+    world.add({
+      id: "npc:bob",
+      state: { mood: "friendly", description: "A friendly merchant" },
+      handlers: {
+        talk: ["perform", "reply", "Hi"],
+      },
+      interface: ["talk"],
+      children: [],
+      prototype: "proto:npc",
+    });
+
+    world.add({
+      id: "npc:charlie",
+      state: { mood: "hostile" },
+      handlers: {
+        fight: null,
+      },
+      interface: ["fight"],
+      children: [],
+      prototype: "proto:npc",
+    });
+
+    world.add({
+      id: "item:sword",
+      state: { damage: 10 },
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:weapon",
+    });
+
+    world.add({
+      id: "item:shield",
+      state: { defense: 5 },
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:armor",
+    });
+
+    world.add({
+      id: "proto:npc",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: null,
+    });
+
+    world.add({
+      id: "proto:item",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: null,
+    });
+
+    world.add({
+      id: "proto:weapon",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:item",
+    });
+
+    world.add({
+      id: "proto:armor",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: "proto:item",
+    });
+
+    world.add({
+      id: "room:tavern",
+      state: { description: "A noisy tavern" },
+      handlers: {},
+      interface: [],
+      children: ["npc:alice", "npc:bob"],
+      prototype: null,
+    });
+
+    return world;
+  }
+
+  test("query by state", () => {
+    const world = makeQueryWorld();
+
+    // Handler that queries for hostile NPCs
+    world.add({
+      id: "querier",
+      state: {},
+      handlers: {
+        search: [
+          "let", "results",
+          ["query", { state: { mood: "hostile" } }],
+          ["perform", "set", "found", ["get", "results"]],
+        ],
+      },
+      interface: ["search"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "querier", "search");
+    const found = world.objects.get("querier")!.state.found as Value[];
+    expect(Array.isArray(found)).toBe(true);
+    const ids = found.map((v: any) => v.$ref);
+    expect(ids).toContain("npc:alice");
+    expect(ids).toContain("npc:charlie");
+    expect(ids.length).toBe(2);
+  });
+
+  test("query by interface", () => {
+    const world = makeQueryWorld();
+
+    world.add({
+      id: "querier",
+      state: {},
+      handlers: {
+        search: [
+          "let", "results",
+          ["query", { interface: ["array", "talk"] }],
+          ["perform", "set", "found", ["get", "results"]],
+        ],
+      },
+      interface: ["search"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "querier", "search");
+    const found = world.objects.get("querier")!.state.found as Value[];
+    const ids = found.map((v: any) => v.$ref);
+    expect(ids).toContain("npc:alice");
+    expect(ids).toContain("npc:bob");
+    expect(ids).not.toContain("npc:charlie");
+  });
+
+  test("query by prototype", () => {
+    const world = makeQueryWorld();
+
+    world.add({
+      id: "querier",
+      state: {},
+      handlers: {
+        search: [
+          "let", "results",
+          ["query", { prototype: "proto:item" }],
+          ["perform", "set", "found", ["get", "results"]],
+        ],
+      },
+      interface: ["search"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "querier", "search");
+    const found = world.objects.get("querier")!.state.found as Value[];
+    const ids = found.map((v: any) => v.$ref);
+    expect(ids).toContain("item:sword");
+    expect(ids).toContain("item:shield");
+    expect(ids).toContain("proto:weapon");
+    expect(ids).toContain("proto:armor");
+    expect(ids.length).toBe(4);
+  });
+
+  test("query by has-state", () => {
+    const world = makeQueryWorld();
+
+    world.add({
+      id: "querier",
+      state: {},
+      handlers: {
+        search: [
+          "let", "results",
+          ["query", { "has-state": ["array", "description"] }],
+          ["perform", "set", "found", ["get", "results"]],
+        ],
+      },
+      interface: ["search"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "querier", "search");
+    const found = world.objects.get("querier")!.state.found as Value[];
+    const ids = found.map((v: any) => v.$ref);
+    expect(ids).toContain("npc:alice");
+    expect(ids).toContain("npc:bob");
+    expect(ids).toContain("room:tavern");
+    expect(ids).not.toContain("npc:charlie");
+  });
+
+  test("query combined: state + interface", () => {
+    const world = makeQueryWorld();
+
+    world.add({
+      id: "querier",
+      state: {},
+      handlers: {
+        search: [
+          "let", "results",
+          ["query", { state: { mood: "hostile" }, interface: ["array", "talk"] }],
+          ["perform", "set", "found", ["get", "results"]],
+        ],
+      },
+      interface: ["search"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "querier", "search");
+    const found = world.objects.get("querier")!.state.found as Value[];
+    expect(found.length).toBe(1);
+    expect((found[0] as any).$ref).toBe("npc:alice");
+  });
+
+  test("query empty result", () => {
+    const world = makeQueryWorld();
+
+    world.add({
+      id: "querier",
+      state: {},
+      handlers: {
+        search: [
+          "let", "results",
+          ["query", { state: { mood: "scared" } }],
+          ["perform", "set", "found", ["get", "results"]],
+        ],
+      },
+      interface: ["search"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "querier", "search");
+    const found = world.objects.get("querier")!.state.found as Value[];
+    expect(found.length).toBe(0);
+  });
+
+  test("query from handler: find and message hostile NPCs", () => {
+    const world = new World();
+
+    world.add({
+      id: "npc:orc",
+      state: { mood: "hostile" },
+      handlers: {
+        alert: ["perform", "set", "alerted", true],
+      },
+      interface: ["alert"],
+      children: [],
+      prototype: null,
+    });
+
+    world.add({
+      id: "npc:goblin",
+      state: { mood: "hostile" },
+      handlers: {
+        alert: ["perform", "set", "alerted", true],
+      },
+      interface: ["alert"],
+      children: [],
+      prototype: null,
+    });
+
+    world.add({
+      id: "npc:merchant",
+      state: { mood: "friendly" },
+      handlers: {
+        alert: ["perform", "set", "alerted", true],
+      },
+      interface: ["alert"],
+      children: [],
+      prototype: null,
+    });
+
+    // Player shouts: query for hostile NPCs with alert interface, send them all "alert"
+    world.add({
+      id: "player",
+      state: {},
+      handlers: {
+        shout: [
+          "let", "hostiles",
+          ["query", { state: { mood: "hostile" }, interface: ["array", "alert"] }],
+          ["do",
+            ["perform", "set", "found-count", ["length", ["get", "hostiles"]]],
+            ["map", ["get", "hostiles"],
+              ["fn", ["target"],
+                ["perform", "send", ["get", "target"], "alert", null]]],
+          ],
+        ],
+      },
+      interface: ["shout"],
+      children: [],
+      prototype: null,
+    });
+
+    sendMsg(world, "player", "shout");
+
+    expect(world.objects.get("player")!.state["found-count"]).toBe(2);
+    expect(world.objects.get("npc:orc")!.state.alerted).toBe(true);
+    expect(world.objects.get("npc:goblin")!.state.alerted).toBe(true);
+    expect(world.objects.get("npc:merchant")!.state.alerted).toBeUndefined();
+  });
 });

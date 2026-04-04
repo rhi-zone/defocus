@@ -1,4 +1,4 @@
-import type { Value, Expr } from "./value.js";
+import type { Value, Expr, Identity } from "./value.js";
 import { isTruthy, asStr, asNum, asArray, asRecord, asRef, isRef, refVerbs } from "./value.js";
 import type { DefocusObject, Effect, Message } from "./world.js";
 import type { LlmProvider } from "./llm.js";
@@ -7,10 +7,11 @@ interface Env {
   bindings: Array<[string, Value]>;
   effects: Effect[];
   llm: LlmProvider | null;
+  worldObjects: Map<Identity, DefocusObject> | null;
 }
 
-function envNew(llm: LlmProvider | null = null): Env {
-  return { bindings: [], effects: [], llm };
+function envNew(llm: LlmProvider | null = null, worldObjects: Map<Identity, DefocusObject> | null = null): Env {
+  return { bindings: [], effects: [], llm, worldObjects };
 }
 
 function envBind(env: Env, name: string, value: Value): void {
@@ -50,7 +51,19 @@ export function evalHandlerWithLlm(
   sender: string | undefined = undefined,
   llm: LlmProvider | null = null,
 ): Effect[] {
-  const env = envNew(llm);
+  return evalHandlerWithWorld(handler, payload, state, selfId, sender, llm, null);
+}
+
+export function evalHandlerWithWorld(
+  handler: Expr,
+  payload: Value,
+  state: Value,
+  selfId: string = "",
+  sender: string | undefined = undefined,
+  llm: LlmProvider | null = null,
+  worldObjects: Map<Identity, DefocusObject> | null = null,
+): Effect[] {
+  const env = envNew(llm, worldObjects);
   envBind(env, "self", { $ref: selfId });
   envBind(env, "sender", sender !== undefined ? { $ref: sender } : null);
   envBind(env, "payload", payload);
@@ -662,6 +675,95 @@ function evalCall(op: string, args: Value[], env: Env): Value {
       const arr = asArray(arrVal);
       if (!arr) return null;
       return [...arr].reverse();
+    }
+
+    case "query": {
+      if (!env.worldObjects) return [];
+      const filter = evaluate(args[0], env);
+      const filterRec = asRecord(filter);
+      if (!filterRec) return [];
+
+      const stateFilter = asRecord(filterRec.state ?? null);
+      const interfaceFilter = asArray(filterRec.interface ?? null)?.filter(
+        (v): v is string => typeof v === "string",
+      );
+      const protoFilterVal = filterRec.prototype;
+      const prototypeFilter = protoFilterVal != null
+        ? asRef(protoFilterVal) ?? asStr(protoFilterVal)
+        : undefined;
+      const childrenOfVal = filterRec["children-of"];
+      const childrenOfFilter = childrenOfVal != null
+        ? asRef(childrenOfVal) ?? asStr(childrenOfVal)
+        : undefined;
+      const hasStateFilter = asArray(filterRec["has-state"] ?? null)?.filter(
+        (v): v is string => typeof v === "string",
+      );
+
+      const results: Value[] = [];
+      for (const [id, obj] of env.worldObjects) {
+        // state filter
+        if (stateFilter) {
+          let matches = true;
+          for (const [k, v] of Object.entries(stateFilter)) {
+            if (!(k in obj.state) || !deepEqual(obj.state[k], v)) {
+              matches = false;
+              break;
+            }
+          }
+          if (!matches) continue;
+        }
+
+        // interface filter
+        if (interfaceFilter) {
+          let matches = true;
+          for (const verb of interfaceFilter) {
+            if (!obj.interface.includes(verb)) {
+              matches = false;
+              break;
+            }
+          }
+          if (!matches) continue;
+        }
+
+        // prototype filter: walk chain
+        if (prototypeFilter !== undefined) {
+          let found = false;
+          const visited = new Set<string>();
+          let current: string | null = obj.prototype;
+          while (current !== null) {
+            if (visited.has(current)) break;
+            visited.add(current);
+            if (current === prototypeFilter) {
+              found = true;
+              break;
+            }
+            const parent = env.worldObjects.get(current);
+            current = parent?.prototype ?? null;
+          }
+          if (!found) continue;
+        }
+
+        // children-of filter
+        if (childrenOfFilter !== undefined) {
+          const parent = env.worldObjects.get(childrenOfFilter);
+          if (!parent || !parent.children.includes(id)) continue;
+        }
+
+        // has-state filter
+        if (hasStateFilter) {
+          let matches = true;
+          for (const key of hasStateFilter) {
+            if (!(key in obj.state)) {
+              matches = false;
+              break;
+            }
+          }
+          if (!matches) continue;
+        }
+
+        results.push({ $ref: id });
+      }
+      return results;
     }
 
     case "llm": {

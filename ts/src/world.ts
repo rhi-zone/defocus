@@ -1,5 +1,5 @@
 import type { Value, Expr, Identity } from "./value.js";
-import { evalHandler, evalHandlerWithLlm } from "./eval.js";
+import { evalHandler, evalHandlerWithLlm, evalHandlerWithWorld } from "./eval.js";
 import type { Event, EventLog } from "./log.js";
 import type { LlmProvider } from "./llm.js";
 
@@ -88,13 +88,14 @@ export class World {
       return [];
     }
 
-    const effects = evalHandlerWithLlm(
+    const effects = evalHandlerWithWorld(
       handler,
       message.payload,
       object.state,
       targetId,
       sender,
       this.llm,
+      this.objects,
     );
 
     const replies: Value[] = [];

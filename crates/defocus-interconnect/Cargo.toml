@@ -1,0 +1,11 @@
+[package]
+name = "defocus-interconnect"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+defocus-core = { path = "../defocus-core" }
+serde_json = "1"
+# TODO: Add interconnect-core dependency once published on crates.io.
+# Do NOT use a path dependency (ecosystem rule).
+# interconnect-core = "0.1"
