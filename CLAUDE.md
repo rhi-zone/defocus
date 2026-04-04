@@ -54,6 +54,7 @@ defocus is the substrate they all needed but never had. The protocol is the prod
 - **existence** (`~/git/paragarden/existence`) — independently invented the text-as-rendering-layer architecture, observation sources + prose compositor pattern, and PRNG discipline for deterministic replay. Study it before touching the text rendering layer.
 - **Interconnect** (`~/git/rhizone/interconnect`) — the complementary network layer. defocus is what runs inside an Interconnect room.
 - **Dusklight/Marinada** (`~/git/rhizone/dusklight/`) — the expression language. defocus's evaluator implements a Marinada subset: JSON-native expressions, pattern matching, algebraic effects. Marinada is the canonical reference for language features to port.
+- **Reincarnate** (`~/git/rhizone/reincarnate/`) — composable persistence architecture. `SaveBackend` trait (load/save/remove) with `debounced()`, `rolling()`, `tee()` combinators. Also has snapshot vs diff history strategies for undo/branching. defocus should borrow the persistence trait and composable wrappers directly.
 
 ## Architecture
 
