@@ -10,3 +10,5 @@ export { MemoryBackend, Tee, Rolling, saveWorld, loadWorld } from "./persist.js"
 export type { Event, EventLog } from "./log.js";
 export { createEventLog, branchAt, replayFrom, forkAt } from "./log.js";
 export { LocalStorageBackend, IndexedDbBackend } from "./persist-browser.js";
+export type { WorldDiff } from "./diff.js";
+export { diff, applyDiff, isDiffEmpty, emptyDiff } from "./diff.js";

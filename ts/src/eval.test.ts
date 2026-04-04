@@ -246,3 +246,76 @@ describe("Record operations", () => {
     expect(result).toEqual({ b: 2 });
   });
 });
+
+describe("Recursion (let-fn)", () => {
+  test("factorial via recursion", () => {
+    const result = evalExpr([
+      "let-fn", "fact", ["n"],
+      ["if", ["<=", ["get", "n"], 1],
+        1,
+        ["*", ["get", "n"], ["call", ["get", "fact"], ["-", ["get", "n"], 1]]]],
+      ["call", ["get", "fact"], 5],
+    ]);
+    expect(result).toBe(120);
+  });
+});
+
+describe("Loop constructs", () => {
+  test("while loop returns null when never entered", () => {
+    expect(evalExpr(["while", false, 42])).toBeNull();
+  });
+
+  test("for loop collects squares", () => {
+    const result = evalExpr([
+      "for", "x", [1, 2, 3, 4, 5],
+      ["*", ["get", "x"], ["get", "x"]],
+    ]);
+    expect(result).toEqual([1, 4, 9, 16, 25]);
+  });
+
+  test("loop with break finds first element > 3", () => {
+    const result = evalExpr([
+      "for", "x", [1, 2, 3, 4, 5],
+      ["if", [">", ["get", "x"], 3],
+        ["break", ["get", "x"]],
+        null],
+    ]);
+    expect(result).toBe(4);
+  });
+
+  test("loop infinite with break", () => {
+    expect(evalExpr(["loop", ["break", 42]])).toBe(42);
+  });
+
+  test("nested for loops", () => {
+    const result = evalExpr([
+      "for", "i", [1, 2],
+      ["for", "j", [10, 20],
+        ["+", ["get", "i"], ["get", "j"]]],
+    ]);
+    expect(result).toEqual([[11, 21], [12, 22]]);
+  });
+
+  test("iteration limit prevents infinite while", () => {
+    // while(true) should not hang, returns null after limit
+    expect(evalExpr(["while", true, null])).toBeNull();
+  });
+});
+
+describe("Early return", () => {
+  test("fn that returns early on condition", () => {
+    const result = evalExpr([
+      "let", "check",
+      ["fn", ["x"],
+        ["do",
+          ["if", [">", ["get", "x"], 10],
+            ["return", "big"],
+            null],
+          "small"]],
+      ["array",
+        ["call", ["get", "check"], 5],
+        ["call", ["get", "check"], 15]],
+    ]);
+    expect(result).toEqual(["small", "big"]);
+  });
+});

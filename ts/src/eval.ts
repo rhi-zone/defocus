@@ -72,6 +72,26 @@ export function evalHandlerWithWorld(
   return env.effects;
 }
 
+const ITERATION_LIMIT = 10_000;
+
+function isBreak(v: Value): Value | undefined {
+  if (Array.isArray(v) && v.length === 2 && v[0] === "$break") {
+    return v[1];
+  }
+  return undefined;
+}
+
+function isReturn(v: Value): Value | undefined {
+  if (Array.isArray(v) && v.length === 2 && v[0] === "$return") {
+    return v[1];
+  }
+  return undefined;
+}
+
+function isSignal(v: Value): boolean {
+  return isBreak(v) !== undefined || isReturn(v) !== undefined;
+}
+
 function evaluate(expr: Expr, env: Env): Value {
   if (expr === null || typeof expr === "boolean" || typeof expr === "number") {
     return expr;
@@ -126,18 +146,100 @@ function evalCall(op: string, args: Value[], env: Env): Value {
 
     case "do": {
       let result: Value = null;
-      for (const arg of args) result = evaluate(arg, env);
+      for (const arg of args) {
+        result = evaluate(arg, env);
+        if (isSignal(result)) return result;
+      }
       return result;
     }
 
     case "let": {
       const name = asStr(args[0] as Value) ?? "_";
       const value = evaluate(args[1], env);
+      if (isSignal(value)) return value;
       const mark = envPushScope(env);
       envBind(env, name, value);
       const result = evaluate(args[2], env);
       envPopScope(env, mark);
       return result;
+    }
+
+    case "let-fn": {
+      // ["let-fn", name, [params], body, continuation]
+      // Creates ["$fn", [params], body, captured-bindings, name] — 5-element form.
+      // The call op recognizes the 5th element and injects the fn into its own env.
+      if (args.length < 4) return null;
+      const name = asStr(args[0] as Value) ?? "_";
+      const captured: { [key: string]: Value } = {};
+      for (const [k, v] of env.bindings) {
+        captured[k] = v;
+      }
+      const func: Value = ["$fn", args[1], args[2], captured, name];
+      const mark = envPushScope(env);
+      envBind(env, name, func);
+      const result = evaluate(args[3], env);
+      envPopScope(env, mark);
+      return result;
+    }
+
+    case "while": {
+      // ["while", condition, body]
+      let result: Value = null;
+      for (let i = 0; i < ITERATION_LIMIT; i++) {
+        const cond = evaluate(args[0], env);
+        if (isSignal(cond)) return cond;
+        if (!isTruthy(cond)) break;
+        result = evaluate(args[1], env);
+        const brk = isBreak(result);
+        if (brk !== undefined) return brk;
+        if (isReturn(result) !== undefined) return result;
+      }
+      return result;
+    }
+
+    case "for": {
+      // ["for", var-name, iterable-expr, body-expr]
+      const varName = asStr(args[0] as Value) ?? "_";
+      const iterable = evaluate(args[1], env);
+      if (isSignal(iterable)) return iterable;
+      const arr = asArray(iterable);
+      if (!arr) return null;
+      const results: Value[] = [];
+      let count = 0;
+      for (const elem of arr) {
+        if (count >= ITERATION_LIMIT) break;
+        count++;
+        const mark = envPushScope(env);
+        envBind(env, varName, elem);
+        const result = evaluate(args[2], env);
+        envPopScope(env, mark);
+        const brk = isBreak(result);
+        if (brk !== undefined) return brk;
+        if (isReturn(result) !== undefined) return result;
+        results.push(result);
+      }
+      return results;
+    }
+
+    case "loop": {
+      // ["loop", body] — infinite loop, exit with ["break", value]
+      for (let i = 0; i < ITERATION_LIMIT; i++) {
+        const result = evaluate(args[0], env);
+        const brk = isBreak(result);
+        if (brk !== undefined) return brk;
+        if (isReturn(result) !== undefined) return result;
+      }
+      return null;
+    }
+
+    case "break": {
+      const value = args.length > 0 ? evaluate(args[0], env) : null;
+      return ["$break", value];
+    }
+
+    case "return": {
+      const value = args.length > 0 ? evaluate(args[0], env) : null;
+      return ["$return", value];
     }
 
     case "+":
@@ -240,6 +342,10 @@ function evalCall(op: string, args: Value[], env: Env): Value {
             envBind(env, k, v);
           }
         }
+        // 5-element $fn: inject the function itself under its name for recursion
+        if (fnArr.length >= 5 && typeof fnArr[4] === "string") {
+          envBind(env, fnArr[4], func);
+        }
         for (let i = 0; i < params.length; i++) {
           const name = asStr(params[i] as Value);
           if (name !== undefined) {
@@ -248,7 +354,8 @@ function evalCall(op: string, args: Value[], env: Env): Value {
         }
         const result = evaluate(body, env);
         env.bindings = saved;
-        return result;
+        const ret = isReturn(result);
+        return ret !== undefined ? ret : result;
       } else {
         const mark = envPushScope(env);
         for (let i = 0; i < params.length; i++) {
@@ -259,7 +366,8 @@ function evalCall(op: string, args: Value[], env: Env): Value {
         }
         const result = evaluate(body, env);
         envPopScope(env, mark);
-        return result;
+        const ret = isReturn(result);
+        return ret !== undefined ? ret : result;
       }
     }
 
@@ -798,6 +906,10 @@ function callFn(func: Value, callArgs: Value[], env: Env): Value {
         envBind(env, k, v);
       }
     }
+    // 5-element $fn: inject self for recursion
+    if (fnArr.length >= 5 && typeof fnArr[4] === "string") {
+      envBind(env, fnArr[4], func);
+    }
     for (let i = 0; i < params.length; i++) {
       const name = asStr(params[i] as Value);
       if (name !== undefined) {
@@ -806,7 +918,8 @@ function callFn(func: Value, callArgs: Value[], env: Env): Value {
     }
     const result = evaluate(body, env);
     env.bindings = saved;
-    return result;
+    const ret = isReturn(result);
+    return ret !== undefined ? ret : result;
   } else {
     const mark = envPushScope(env);
     for (let i = 0; i < params.length; i++) {
@@ -817,7 +930,8 @@ function callFn(func: Value, callArgs: Value[], env: Env): Value {
     }
     const result = evaluate(body, env);
     envPopScope(env, mark);
-    return result;
+    const ret = isReturn(result);
+    return ret !== undefined ? ret : result;
   }
 }
 

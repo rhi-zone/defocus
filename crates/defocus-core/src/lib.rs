@@ -1,3 +1,4 @@
+pub mod diff;
 pub mod eval;
 pub mod llm;
 pub mod log;

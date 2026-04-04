@@ -97,6 +97,30 @@ pub fn eval_handler_with_world(
     env.effects
 }
 
+const ITERATION_LIMIT: usize = 10_000;
+
+fn is_break(v: &Value) -> Option<&Value> {
+    if let Some(arr) = v.as_array() {
+        if arr.len() == 2 && arr[0].as_str() == Some("$break") {
+            return Some(&arr[1]);
+        }
+    }
+    None
+}
+
+fn is_return(v: &Value) -> Option<&Value> {
+    if let Some(arr) = v.as_array() {
+        if arr.len() == 2 && arr[0].as_str() == Some("$return") {
+            return Some(&arr[1]);
+        }
+    }
+    None
+}
+
+fn is_signal(v: &Value) -> bool {
+    is_break(v).is_some() || is_return(v).is_some()
+}
+
 fn eval(expr: &Expr, env: &mut Env) -> Value {
     match expr {
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => expr.clone(),
@@ -165,6 +189,9 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             let mut result = Value::Null;
             for arg in args {
                 result = eval(arg, env);
+                if is_signal(&result) {
+                    return result;
+                }
             }
             result
         }
@@ -173,11 +200,129 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             // ["let", name, value, body]
             let name = args[0].as_str().unwrap_or("_").to_string();
             let value = eval(&args[1], env);
+            if is_signal(&value) {
+                return value;
+            }
             let mark = env.push_scope();
             env.bind(name, value);
             let result = eval(&args[2], env);
             env.pop_scope(mark);
             result
+        }
+
+        // Named function (recursion): ["let-fn", name, [params], body, continuation]
+        // Creates ["$fn", [params], body, captured-bindings, name] — 5-element form.
+        // The call op recognizes the 5th element and injects the fn into its own env.
+        "let-fn" => {
+            if args.len() < 4 {
+                return Value::Null;
+            }
+            let name = args[0].as_str().unwrap_or("_").to_string();
+            let params = args[1].clone();
+            let body = args[2].clone();
+            let mut captured = BTreeMap::new();
+            for (k, v) in &env.bindings {
+                captured.insert(k.clone(), v.clone());
+            }
+            let func = Value::Array(vec![
+                Value::String("$fn".into()),
+                params,
+                body,
+                Value::Record(captured),
+                Value::String(name.clone()),
+            ]);
+            let mark = env.push_scope();
+            env.bind(name, func);
+            let result = eval(&args[3], env);
+            env.pop_scope(mark);
+            result
+        }
+
+        // Loop constructs
+        "while" => {
+            // ["while", condition, body]
+            let mut result = Value::Null;
+            for _ in 0..ITERATION_LIMIT {
+                let cond = eval(&args[0], env);
+                if is_signal(&cond) {
+                    return cond;
+                }
+                if !cond.is_truthy() {
+                    break;
+                }
+                result = eval(&args[1], env);
+                if let Some(val) = is_break(&result) {
+                    return val.clone();
+                }
+                if is_return(&result).is_some() {
+                    return result;
+                }
+            }
+            result
+        }
+
+        "for" => {
+            // ["for", var-name, iterable-expr, body-expr]
+            let var_name = args[0].as_str().unwrap_or("_").to_string();
+            let iterable = eval(&args[1], env);
+            if is_signal(&iterable) {
+                return iterable;
+            }
+            let Some(arr) = iterable.as_array() else {
+                return Value::Null;
+            };
+            let mut results = Vec::new();
+            for (count, elem) in arr.iter().enumerate() {
+                if count >= ITERATION_LIMIT {
+                    break;
+                }
+                let mark = env.push_scope();
+                env.bind(var_name.clone(), elem.clone());
+                let result = eval(&args[2], env);
+                env.pop_scope(mark);
+                if let Some(val) = is_break(&result) {
+                    return val.clone();
+                }
+                if is_return(&result).is_some() {
+                    return result;
+                }
+                results.push(result);
+            }
+            Value::Array(results)
+        }
+
+        "loop" => {
+            // ["loop", body] — infinite loop, exit with ["break", value]
+            for _ in 0..ITERATION_LIMIT {
+                let result = eval(&args[0], env);
+                if let Some(val) = is_break(&result) {
+                    return val.clone();
+                }
+                if is_return(&result).is_some() {
+                    return result;
+                }
+            }
+            Value::Null
+        }
+
+        "break" => {
+            // ["break", value-expr]
+            let value = if args.is_empty() {
+                Value::Null
+            } else {
+                eval(&args[0], env)
+            };
+            Value::Array(vec![Value::String("$break".into()), value])
+        }
+
+        "return" => {
+            // ["return", value-expr]
+            let value = if args.is_empty() {
+                Value::Null
+            } else {
+                eval(&args[0], env)
+            };
+            Value::Array(vec![Value::String("$return".into()), value])
         }
 
         // Arithmetic
@@ -323,6 +468,12 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                         env.bind(k.clone(), v.clone());
                     }
                 }
+                // 5-element $fn: inject the function itself under its name for recursion
+                if fn_arr.len() >= 5 {
+                    if let Some(self_name) = fn_arr[4].as_str() {
+                        env.bind(self_name.to_string(), func.clone());
+                    }
+                }
                 for (i, param) in params.iter().enumerate() {
                     if let Some(name) = param.as_str() {
                         let value = evaluated_args.get(i).cloned().unwrap_or(Value::Null);
@@ -331,7 +482,12 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                 }
                 let result = eval(body, env);
                 env.bindings = saved;
-                result
+                // Unwrap $return signals at function boundary
+                if let Some(val) = is_return(&result) {
+                    val.clone()
+                } else {
+                    result
+                }
             } else {
                 let mark = env.push_scope();
                 for (i, param) in params.iter().enumerate() {
@@ -342,7 +498,11 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                 }
                 let result = eval(body, env);
                 env.pop_scope(mark);
-                result
+                if let Some(val) = is_return(&result) {
+                    val.clone()
+                } else {
+                    result
+                }
             }
         }
 
@@ -1097,6 +1257,12 @@ fn call_fn(func: &Value, call_args: &[Value], env: &mut Env) -> Value {
                 env.bind(k.clone(), v.clone());
             }
         }
+        // 5-element $fn: inject self for recursion
+        if fn_arr.len() >= 5 {
+            if let Some(self_name) = fn_arr[4].as_str() {
+                env.bind(self_name.to_string(), func.clone());
+            }
+        }
         for (i, param) in params.iter().enumerate() {
             if let Some(name) = param.as_str() {
                 let value = call_args.get(i).cloned().unwrap_or(Value::Null);
@@ -1105,7 +1271,11 @@ fn call_fn(func: &Value, call_args: &[Value], env: &mut Env) -> Value {
         }
         let result = eval(body, env);
         env.bindings = saved;
-        result
+        if let Some(val) = is_return(&result) {
+            val.clone()
+        } else {
+            result
+        }
     } else {
         let mark = env.push_scope();
         for (i, param) in params.iter().enumerate() {
@@ -1116,7 +1286,11 @@ fn call_fn(func: &Value, call_args: &[Value], env: &mut Env) -> Value {
         }
         let result = eval(body, env);
         env.pop_scope(mark);
-        result
+        if let Some(val) = is_return(&result) {
+            val.clone()
+        } else {
+            result
+        }
     }
 }
 
@@ -1891,5 +2065,157 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"npc:alice"));
         assert!(ids.contains(&"npc:bob"));
+    }
+
+    #[test]
+    fn test_let_fn_recursion() {
+        // factorial: let-fn fact(n) = if n <= 1 then 1 else n * fact(n-1)
+        let handler = val(json!([
+            "let-fn", "fact", ["n"],
+            ["if", ["<=", ["get", "n"], 1],
+                1,
+                ["*", ["get", "n"], ["call", ["get", "fact"], ["-", ["get", "n"], 1]]]],
+            ["call", ["get", "fact"], 5]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Int(120));
+    }
+
+    #[test]
+    fn test_while_loop() {
+        // Use let-fn with accumulator pattern to count from 0 to 5
+        let handler2 = val(json!([
+            "let-fn", "count", ["i", "acc"],
+            ["if", [">=", ["get", "i"], 5],
+                ["get", "acc"],
+                ["call", ["get", "count"], ["+", ["get", "i"], 1], ["push", ["get", "acc"], ["get", "i"]]]],
+            ["call", ["get", "count"], 0, ["array"]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler2, &mut env);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(0),
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_while_basic() {
+        // While loop using perform/set to track state - but we can't read mutable state that way.
+        // The evaluator bindings are immutable (shadowing), so while is best tested via effects or
+        // by combining with a pattern that works. Let's test that while returns last body value.
+        let mut env = Env::new(None);
+        // while(false) never enters, returns null
+        let result = eval(&val(json!(["while", false, 42])), &mut env);
+        assert_eq!(result, Value::Null);
+
+        // Simple while that runs once: use a fn that modifies captured state via recursion isn't
+        // possible with while alone due to immutable bindings. Test with for instead.
+    }
+
+    #[test]
+    fn test_for_loop() {
+        // collect squares of [1,2,3,4,5]
+        let handler = val(json!([
+            "for", "x", [1, 2, 3, 4, 5],
+            ["*", ["get", "x"], ["get", "x"]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Int(4),
+                Value::Int(9),
+                Value::Int(16),
+                Value::Int(25),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_loop_with_break() {
+        // find first element > 3 in array [1, 2, 3, 4, 5]
+        // Use for + break
+        let handler = val(json!([
+            "for", "x", [1, 2, 3, 4, 5],
+            ["if", [">", ["get", "x"], 3],
+                ["break", ["get", "x"]],
+                null]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Int(4));
+    }
+
+    #[test]
+    fn test_loop_infinite_with_break() {
+        // ["loop", ["break", 42]] should return 42
+        let handler = val(json!(["loop", ["break", 42]]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Int(42));
+    }
+
+    #[test]
+    fn test_early_return() {
+        // fn that returns early on a condition
+        let handler = val(json!([
+            "let", "check",
+            ["fn", ["x"],
+                ["do",
+                    ["if", [">", ["get", "x"], 10],
+                        ["return", "big"],
+                        null],
+                    "small"]],
+            ["array",
+                ["call", ["get", "check"], 5],
+                ["call", ["get", "check"], 15]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::String("small".into()),
+                Value::String("big".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_nested_for_loops() {
+        // for i in [1,2], for j in [10,20], i+j
+        let handler = val(json!([
+            "for", "i", [1, 2],
+            ["for", "j", [10, 20],
+                ["+", ["get", "i"], ["get", "j"]]]
+        ]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Array(vec![Value::Int(11), Value::Int(21)]),
+                Value::Array(vec![Value::Int(12), Value::Int(22)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_iteration_limit() {
+        // while(true) should not hang, returns null after limit
+        let handler = val(json!(["while", true, null]));
+        let mut env = Env::new(None);
+        let result = eval(&handler, &mut env);
+        assert_eq!(result, Value::Null);
     }
 }

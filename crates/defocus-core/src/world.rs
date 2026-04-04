@@ -14,7 +14,7 @@ pub struct Message {
     pub payload: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Object {
     pub id: Identity,
     pub state: BTreeMap<String, Value>,
