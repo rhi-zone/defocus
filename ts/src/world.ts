@@ -30,28 +30,34 @@ export function stub(id: Identity, verbs: string[]): DefocusObject {
 
 export class World {
   objects = new Map<Identity, DefocusObject>();
-  queue: Array<[Identity, Message]> = [];
+  queue: Array<[Identity, Message, Identity | undefined]> = [];
 
   add(object: DefocusObject): void {
     this.objects.set(object.id, object);
   }
 
   send(to: Identity, message: Message): void {
-    this.queue.push([to, message]);
+    this.queue.push([to, message, undefined]);
   }
 
   step(): boolean {
     const entry = this.queue.shift();
     if (!entry) return false;
 
-    const [targetId, message] = entry;
+    const [targetId, message, sender] = entry;
     const object = this.objects.get(targetId);
     if (!object) return true;
 
     const handler = object.handlers[message.verb];
     if (!handler) return true;
 
-    const effects = evalHandler(handler, message.payload, object.state);
+    const effects = evalHandler(
+      handler,
+      message.payload,
+      object.state,
+      targetId,
+      sender,
+    );
 
     for (const effect of effects) {
       switch (effect.type) {
@@ -61,7 +67,7 @@ export class World {
           break;
         }
         case "send":
-          this.queue.push([effect.to, effect.message]);
+          this.queue.push([effect.to, effect.message, targetId]);
           break;
         case "spawn":
           this.objects.set(effect.object.id, effect.object);

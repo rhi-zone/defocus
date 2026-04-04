@@ -12,12 +12,29 @@ export type Expr = Value;
 
 export type Identity = string;
 
+export function isRef(v: Value): boolean {
+  return (
+    v !== null &&
+    typeof v === "object" &&
+    !Array.isArray(v) &&
+    "$ref" in v &&
+    typeof v.$ref === "string" &&
+    Object.keys(v).length === 1
+  );
+}
+
+export function asRef(v: Value): string | undefined {
+  if (isRef(v)) return (v as { $ref: string }).$ref;
+  return undefined;
+}
+
 export function isTruthy(v: Value): boolean {
   if (v === null) return false;
   if (typeof v === "boolean") return v;
   if (typeof v === "number") return v !== 0;
   if (typeof v === "string") return v.length > 0;
   if (Array.isArray(v)) return v.length > 0;
+  if (isRef(v)) return true;
   return Object.keys(v).length > 0;
 }
 

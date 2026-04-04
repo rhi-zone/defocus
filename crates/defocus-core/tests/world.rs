@@ -190,3 +190,145 @@ fn counter_increments() {
 
     assert_eq!(world.objects["local:factory"].state["count"], Value::Int(2));
 }
+
+#[test]
+fn spawn_creates_object_in_world() {
+    let mut world = World::new();
+
+    let spawner = Object::new("local:spawner").with_handler(
+        "create",
+        val(json!([
+            "perform",
+            "spawn",
+            "local:child",
+            {
+                "state": { "alive": true },
+                "handlers": {
+                    "ping": ["perform", "set", "ponged", true]
+                },
+                "interface": ["ping"]
+            }
+        ])),
+    );
+
+    world.add(spawner);
+    world.send(
+        "local:spawner".into(),
+        Message {
+            verb: "create".into(),
+            payload: Value::Null,
+        },
+    );
+    world.drain(100);
+
+    assert!(world.objects.contains_key("local:child"));
+    let child = &world.objects["local:child"];
+    assert_eq!(child.state["alive"], Value::Bool(true));
+    assert_eq!(child.interface, vec!["ping".to_string()]);
+    assert!(child.handlers.contains_key("ping"));
+}
+
+#[test]
+fn spawn_returns_ref_usable_for_send() {
+    let mut world = World::new();
+
+    // Spawner creates a child and immediately sends it a message via the returned ref
+    let spawner = Object::new("local:spawner").with_handler(
+        "create-and-ping",
+        val(json!([
+            "let",
+            "child-ref",
+            [
+                "perform",
+                "spawn",
+                "local:child",
+                {
+                    "state": { "pinged": false },
+                    "handlers": {
+                        "ping": ["perform", "set", "pinged", true]
+                    },
+                    "interface": ["ping"]
+                }
+            ],
+            ["perform", "send", ["get", "child-ref"], "ping", null]
+        ])),
+    );
+
+    world.add(spawner);
+    world.send(
+        "local:spawner".into(),
+        Message {
+            verb: "create-and-ping".into(),
+            payload: Value::Null,
+        },
+    );
+    world.drain(100);
+
+    assert!(world.objects.contains_key("local:child"));
+    assert_eq!(
+        world.objects["local:child"].state["pinged"],
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn spawned_object_handlers_work() {
+    let mut world = World::new();
+
+    let spawner = Object::new("local:spawner").with_handler(
+        "create",
+        val(json!([
+            "perform",
+            "spawn",
+            "local:counter",
+            {
+                "state": { "count": 0 },
+                "handlers": {
+                    "increment": [
+                        "perform",
+                        "set",
+                        "count",
+                        ["+", ["get-in", ["get", "state"], "count"], 1]
+                    ]
+                },
+                "interface": ["increment"]
+            }
+        ])),
+    );
+
+    world.add(spawner);
+    world.send(
+        "local:spawner".into(),
+        Message {
+            verb: "create".into(),
+            payload: Value::Null,
+        },
+    );
+    world.drain(100);
+
+    // Now send messages directly to the spawned object
+    world.send(
+        "local:counter".into(),
+        Message {
+            verb: "increment".into(),
+            payload: Value::Null,
+        },
+    );
+    world.send(
+        "local:counter".into(),
+        Message {
+            verb: "increment".into(),
+            payload: Value::Null,
+        },
+    );
+    world.send(
+        "local:counter".into(),
+        Message {
+            verb: "increment".into(),
+            payload: Value::Null,
+        },
+    );
+    world.drain(100);
+
+    assert_eq!(world.objects["local:counter"].state["count"], Value::Int(3));
+}

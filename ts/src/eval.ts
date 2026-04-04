@@ -1,6 +1,6 @@
 import type { Value, Expr } from "./value.js";
-import { isTruthy, asStr, asNum, asArray, asRecord } from "./value.js";
-import type { Effect, Message } from "./world.js";
+import { isTruthy, asStr, asNum, asArray, asRecord, asRef } from "./value.js";
+import type { DefocusObject, Effect, Message } from "./world.js";
 
 interface Env {
   bindings: Array<[string, Value]>;
@@ -34,8 +34,12 @@ export function evalHandler(
   handler: Expr,
   payload: Value,
   state: Value,
+  selfId: string = "",
+  sender: string | undefined = undefined,
 ): Effect[] {
   const env = envNew();
+  envBind(env, "self", { $ref: selfId });
+  envBind(env, "sender", sender !== undefined ? { $ref: sender } : null);
   envBind(env, "payload", payload);
   envBind(env, "state", state);
   evaluate(handler, env);
@@ -174,6 +178,38 @@ function evalCall(op: string, args: Value[], env: Env): Value {
       return null;
     }
 
+    case "fn": {
+      // ["fn", [params...], body] → ["$fn", [params...], body]
+      if (args.length < 2) return null;
+      return ["$fn", args[0], args[1]];
+    }
+
+    case "call": {
+      // ["call", fn-expr, arg1, arg2, ...]
+      if (args.length === 0) return null;
+      const func = evaluate(args[0], env);
+      const fnArr = asArray(func);
+      if (!fnArr || fnArr.length !== 3 || fnArr[0] !== "$fn") return null;
+      const params = asArray(fnArr[1]);
+      if (!params) return null;
+      const body = fnArr[2];
+
+      // Evaluate arguments
+      const evaluatedArgs = args.slice(1).map((a) => evaluate(a, env));
+
+      // Push scope and bind params
+      const mark = envPushScope(env);
+      for (let i = 0; i < params.length; i++) {
+        const name = asStr(params[i] as Value);
+        if (name !== undefined) {
+          envBind(env, name, evaluatedArgs[i] ?? null);
+        }
+      }
+      const result = evaluate(body, env);
+      envPopScope(env, mark);
+      return result;
+    }
+
     case "perform": {
       const tag = asStr(args[0] as Value);
       switch (tag) {
@@ -187,7 +223,8 @@ function evalCall(op: string, args: Value[], env: Env): Value {
         }
         case "send": {
           if (args.length >= 4) {
-            const to = asStr(evaluate(args[1], env)) ?? "";
+            const target = evaluate(args[1], env);
+            const to = asRef(target) ?? asStr(target) ?? "";
             const verb = asStr(evaluate(args[2], env)) ?? "";
             const payload = evaluate(args[3], env);
             env.effects.push({
@@ -200,8 +237,53 @@ function evalCall(op: string, args: Value[], env: Env): Value {
         }
         case "remove": {
           if (args.length >= 2) {
-            const id = asStr(evaluate(args[1], env)) ?? "";
+            const target = evaluate(args[1], env);
+            const id = asRef(target) ?? asStr(target) ?? "";
             env.effects.push({ type: "remove", id });
+          }
+          break;
+        }
+        case "spawn": {
+          if (args.length >= 3) {
+            const target = evaluate(args[1], env);
+            const id = asRef(target) ?? asStr(target) ?? "";
+            // Don't fully evaluate the spec — handlers are stored
+            // as unevaluated expressions, interface is data.
+            // Only evaluate state values (for computed initial state).
+            const spec = asRecord(args[2]);
+            if (spec) {
+              const stateRec = asRecord(spec.state);
+              const state: { [key: string]: Value } = {};
+              if (stateRec) {
+                for (const [k, v] of Object.entries(stateRec)) {
+                  state[k] = evaluate(v, env);
+                }
+              }
+              const handlersRec = asRecord(spec.handlers);
+              const handlers: { [verb: string]: Value } = {};
+              if (handlersRec) {
+                for (const [k, v] of Object.entries(handlersRec)) {
+                  handlers[k] = v; // Not evaluated — stored for later
+                }
+              }
+              const ifaceArr = asArray(spec.interface);
+              const iface: string[] = [];
+              if (ifaceArr) {
+                for (const v of ifaceArr) {
+                  const s = asStr(v);
+                  if (s !== undefined) iface.push(s);
+                }
+              }
+              const object: DefocusObject = {
+                id,
+                state,
+                handlers,
+                interface: iface,
+                children: [],
+              };
+              env.effects.push({ type: "spawn", object });
+              return { $ref: id };
+            }
           }
           break;
         }
