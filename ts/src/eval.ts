@@ -235,6 +235,13 @@ function evalCall(op: string, args: Value[], env: Env): Value {
           }
           break;
         }
+        case "reply": {
+          if (args.length >= 2) {
+            const value = evaluate(args[1], env);
+            env.effects.push({ type: "reply", value });
+          }
+          break;
+        }
         case "remove": {
           if (args.length >= 2) {
             const target = evaluate(args[1], env);

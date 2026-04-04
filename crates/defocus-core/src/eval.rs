@@ -306,6 +306,12 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                         });
                     }
                 }
+                "reply" => {
+                    if args.len() >= 2 {
+                        let value = eval(&args[1], env);
+                        env.effects.push(Effect::Reply { value });
+                    }
+                }
                 "remove" => {
                     if args.len() >= 2 {
                         let target = eval(&args[1], env);

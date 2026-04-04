@@ -5,6 +5,11 @@ import type { DefocusObject, Effect } from "./world.js";
 import type { Value, Expr } from "./value.js";
 import { isRef, asRef, isTruthy } from "./value.js";
 
+function sendMsg(world: World, to: string, verb: string, payload: Value = null): Value[] {
+  world.send(to, { verb, payload });
+  return world.drain(100);
+}
+
 describe("World", () => {
   test("door opens and notifies frame", () => {
     const world = new World();
@@ -426,6 +431,90 @@ describe("World", () => {
     expect(world.objects.get("local:child")!.state.pinged).toBe(true);
   });
 
+  test("world serialization round-trip", () => {
+    const world = new World();
+
+    const room: DefocusObject = {
+      id: "local:room",
+      state: { description: "A dusty room.", door: { $ref: "local:door" } },
+      handlers: {
+        look: ["get-in", ["get", "state"], "description"],
+      },
+      interface: ["look"],
+      children: ["local:door"],
+    };
+
+    const door: DefocusObject = {
+      id: "local:door",
+      state: { open: false },
+      handlers: {
+        open: ["perform", "set", "open", true],
+      },
+      interface: ["open"],
+      children: [],
+    };
+
+    world.add(room);
+    world.add(door);
+
+    // Add to queue to verify it's not serialized
+    world.send("local:door", { verb: "open", payload: null });
+
+    const json = world.toJSON() as any;
+
+    // Verify structure
+    expect(json.version).toBe(1);
+    expect(json.objects["local:room"].state.door).toEqual({ $ref: "local:door" });
+    expect(json.objects["local:room"].children).toEqual(["local:door"]);
+    // id should NOT be in the object body
+    expect(json.objects["local:room"].id).toBeUndefined();
+
+    // Round-trip
+    const restored = World.fromJSON(json);
+
+    // Queue should be empty
+    expect(restored.queue.length).toBe(0);
+
+    // Objects match
+    expect(restored.objects.size).toBe(2);
+
+    const restoredRoom = restored.objects.get("local:room")!;
+    expect(restoredRoom.id).toBe("local:room");
+    expect(restoredRoom.state.description).toBe("A dusty room.");
+    expect(restoredRoom.state.door).toEqual({ $ref: "local:door" });
+    expect(isRef(restoredRoom.state.door)).toBe(true);
+    expect(asRef(restoredRoom.state.door)).toBe("local:door");
+    expect(restoredRoom.interface).toEqual(["look"]);
+    expect(restoredRoom.children).toEqual(["local:door"]);
+    expect(restoredRoom.handlers.look).toBeDefined();
+
+    const restoredDoor = restored.objects.get("local:door")!;
+    expect(restoredDoor.state.open).toBe(false);
+    expect(restoredDoor.interface).toEqual(["open"]);
+    expect(restoredDoor.handlers.open).toBeDefined();
+  });
+
+  test("world serialization via JSON.stringify round-trip", () => {
+    const world = new World();
+    world.add({
+      id: "local:obj",
+      state: { ref: { $ref: "local:other" }, value: 42 },
+      handlers: { ping: ["perform", "set", "ponged", true] },
+      interface: ["ping"],
+      children: [],
+    });
+
+    // Serialize through JSON string (simulates file save/load)
+    const str = JSON.stringify(world.toJSON());
+    const restored = World.fromJSON(JSON.parse(str));
+
+    const obj = restored.objects.get("local:obj")!;
+    expect(obj.state.ref).toEqual({ $ref: "local:other" });
+    expect(isRef(obj.state.ref)).toBe(true);
+    expect(obj.state.value).toBe(42);
+    expect(restored.queue.length).toBe(0);
+  });
+
   test("spawned object handlers work", () => {
     const world = new World();
 
@@ -466,5 +555,160 @@ describe("World", () => {
     world.drain(100);
 
     expect(world.objects.get("local:counter")!.state.count).toBe(3);
+  });
+
+  test("interactive fiction scenario", () => {
+    const world = new World();
+
+    // Room
+    const room: DefocusObject = {
+      id: "local:room",
+      state: {
+        description: "A dimly lit stone chamber. A heavy wooden door stands to the north. An old woman sits in the corner.",
+        door: { $ref: "local:door" },
+        npc: { $ref: "local:npc" },
+      },
+      handlers: {
+        look: [
+          "do",
+          ["perform", "reply", ["get-in", ["get", "state"], "description"]],
+          ["perform", "reply",
+            ["concat",
+              "Door: ",
+              ["if",
+                ["get-in", ["get", "state"], "door"],
+                "There is a door to the north.",
+                "No door here.",
+              ],
+            ],
+          ],
+          ["perform", "reply",
+            ["concat",
+              "NPC: ",
+              ["if",
+                ["get-in", ["get", "state"], "npc"],
+                "An old woman sits in the corner.",
+                "Nobody is here.",
+              ],
+            ],
+          ],
+        ],
+      },
+      interface: ["look"],
+      children: [],
+    };
+
+    // Door
+    const door: DefocusObject = {
+      id: "local:door",
+      state: {
+        open: false,
+        description: "A heavy wooden door, reinforced with iron bands.",
+      },
+      handlers: {
+        look: [
+          "perform", "reply",
+          ["concat",
+            ["get-in", ["get", "state"], "description"],
+            " It is ",
+            ["if", ["get-in", ["get", "state"], "open"], "open", "closed"],
+            ".",
+          ],
+        ],
+        open: [
+          "if",
+          ["get-in", ["get", "state"], "open"],
+          ["perform", "reply", "The door is already open."],
+          ["do",
+            ["perform", "set", "open", true],
+            ["perform", "reply", "The door creaks open."],
+          ],
+        ],
+        close: [
+          "if",
+          ["not", ["get-in", ["get", "state"], "open"]],
+          ["perform", "reply", "The door is already closed."],
+          ["do",
+            ["perform", "set", "open", false],
+            ["perform", "reply", "The door swings shut."],
+          ],
+        ],
+      },
+      interface: ["look", "open", "close"],
+      children: [],
+    };
+
+    // NPC
+    const npc: DefocusObject = {
+      id: "local:npc",
+      state: {
+        name: "Old Woman",
+        mood: "wary",
+        description: "An old woman with sharp eyes watches you carefully.",
+      },
+      handlers: {
+        look: ["perform", "reply", ["get-in", ["get", "state"], "description"]],
+        talk: [
+          "match", ["get", "payload"],
+          ["greeting", ["do",
+            ["perform", "set", "mood", "warm"],
+            ["perform", "reply", "She nods slowly. 'Welcome, traveler.'"],
+          ]],
+          ["threat", ["do",
+            ["perform", "set", "mood", "hostile"],
+            ["perform", "reply", "Her eyes narrow. 'You'd best move along.'"],
+          ]],
+          ["_", ["perform", "reply", "She regards you silently."]],
+        ],
+      },
+      interface: ["look", "talk"],
+      children: [],
+    };
+
+    world.add(room);
+    world.add(door);
+    world.add(npc);
+
+    // 1. Look at room
+    let replies = sendMsg(world, "local:room", "look");
+    expect(replies.length).toBe(3);
+    expect(replies[0]).toBe(
+      "A dimly lit stone chamber. A heavy wooden door stands to the north. An old woman sits in the corner.",
+    );
+    expect((replies[1] as string).includes("door")).toBe(true);
+    expect((replies[2] as string).includes("NPC")).toBe(true);
+
+    // 2. Look at door — verify mentions "closed"
+    replies = sendMsg(world, "local:door", "look");
+    expect(replies.length).toBe(1);
+    expect((replies[0] as string).includes("closed")).toBe(true);
+
+    // 3. Open door
+    replies = sendMsg(world, "local:door", "open");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("The door creaks open.");
+    expect(world.objects.get("local:door")!.state.open).toBe(true);
+
+    // 4. Open door again
+    replies = sendMsg(world, "local:door", "open");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("The door is already open.");
+
+    // 5. Talk to NPC — greeting
+    replies = sendMsg(world, "local:npc", "talk", "greeting");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("She nods slowly. 'Welcome, traveler.'");
+    expect(world.objects.get("local:npc")!.state.mood).toBe("warm");
+
+    // 6. Talk to NPC — threat
+    replies = sendMsg(world, "local:npc", "talk", "threat");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("Her eyes narrow. 'You'd best move along.'");
+    expect(world.objects.get("local:npc")!.state.mood).toBe("hostile");
+
+    // 7. Talk to NPC — wildcard
+    replies = sendMsg(world, "local:npc", "talk", "weather");
+    expect(replies.length).toBe(1);
+    expect(replies[0]).toBe("She regards you silently.");
   });
 });

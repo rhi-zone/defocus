@@ -49,8 +49,11 @@ defocus is the substrate they all needed but never had. The protocol is the prod
 
 ### Prior art in this ecosystem
 
+- **Lotus/Viwo** (`~/git/lotus/`) — the direct ancestor. A persistent multiplayer MOO engine (TS/Bun) with prototype-based entities, S-expression scripting, capability-based security, LLM integration, and multiple clients. Lotus was decomposed into ecosystem primitives: capabilities → Portals, runtime → Moonlet, surface syntax → normalize-surface-syntax. defocus is the piece that remained after extraction — the world model itself (objects, messages, rules as data). Lotus's capability-gated operations (fs, network, AI) collapsed to a single `call(object, method, args)` pattern — capabilities are just message passing. Regular opcodes (pure computation, control flow) stayed as opcodes; plugins can register both.
+- **lua/world** (`~/git/lua/world/`) — earlier prototype. Simple table-based world with excellent serialization (Lua source preserving shared refs and cycles) and a compositional text rendering system with pluggable backends (ANSI, HTML, plain). The serialization approach (deduplication of shared references, human-readable output) is worth studying.
 - **existence** (`~/git/paragarden/existence`) — independently invented the text-as-rendering-layer architecture, observation sources + prose compositor pattern, and PRNG discipline for deterministic replay. Study it before touching the text rendering layer.
 - **Interconnect** (`~/git/rhizone/interconnect`) — the complementary network layer. defocus is what runs inside an Interconnect room.
+- **Dusklight/Marinada** (`~/git/rhizone/dusklight/`) — the expression language. defocus's evaluator implements a Marinada subset: JSON-native expressions, pattern matching, algebraic effects. Marinada is the canonical reference for language features to port.
 
 ## Architecture
 
