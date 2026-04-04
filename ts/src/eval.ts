@@ -461,6 +461,209 @@ function evalCall(op: string, args: Value[], env: Env): Value {
       return null;
     }
 
+    // Null coalescing: ["try", expr, fallback-expr]
+    case "try": {
+      const result = evaluate(args[0], env);
+      return result === null ? evaluate(args[1], env) : result;
+    }
+
+    // Type checking
+    case "type": {
+      const val = evaluate(args[0], env);
+      if (val === null) return "null";
+      if (typeof val === "boolean") return "bool";
+      if (typeof val === "number") return Number.isInteger(val) ? "int" : "float";
+      if (typeof val === "string") return "string";
+      if (Array.isArray(val)) return "array";
+      if (isRef(val)) return "ref";
+      return "record";
+    }
+
+    case "is": {
+      const typeName = evaluate(args[0], env);
+      const val = evaluate(args[1], env);
+      if (typeof typeName !== "string") return false;
+      switch (typeName) {
+        case "null": return val === null;
+        case "bool": return typeof val === "boolean";
+        case "int": return typeof val === "number" && Number.isInteger(val);
+        case "float": return typeof val === "number" && !Number.isInteger(val);
+        case "string": return typeof val === "string";
+        case "array": return Array.isArray(val);
+        case "record": return val !== null && typeof val === "object" && !Array.isArray(val) && !isRef(val);
+        case "ref": return isRef(val);
+        default: return false;
+      }
+    }
+
+    // String operations
+    case "split": {
+      const val = evaluate(args[0], env);
+      const sep = evaluate(args[1], env);
+      if (typeof val !== "string" || typeof sep !== "string") return null;
+      return val.split(sep);
+    }
+
+    case "join": {
+      const val = evaluate(args[0], env);
+      const sep = evaluate(args[1], env);
+      const arr = asArray(val);
+      if (!arr || typeof sep !== "string") return null;
+      return arr.map((v) => String(v ?? "null")).join(sep);
+    }
+
+    case "trim": {
+      const val = evaluate(args[0], env);
+      if (typeof val !== "string") return null;
+      return val.trim();
+    }
+
+    case "starts-with": {
+      const val = evaluate(args[0], env);
+      const prefix = evaluate(args[1], env);
+      if (typeof val !== "string" || typeof prefix !== "string") return false;
+      return val.startsWith(prefix);
+    }
+
+    case "ends-with": {
+      const val = evaluate(args[0], env);
+      const suffix = evaluate(args[1], env);
+      if (typeof val !== "string" || typeof suffix !== "string") return false;
+      return val.endsWith(suffix);
+    }
+
+    case "slice": {
+      const val = evaluate(args[0], env);
+      const start = asNum(evaluate(args[1], env)) ?? 0;
+      const endVal = args.length > 2 ? asNum(evaluate(args[2], env)) : undefined;
+      if (typeof val === "string") {
+        return val.slice(start, endVal);
+      }
+      const arr = asArray(val);
+      if (arr) {
+        return arr.slice(start, endVal);
+      }
+      return null;
+    }
+
+    case "upper": {
+      const val = evaluate(args[0], env);
+      if (typeof val !== "string") return null;
+      return val.toUpperCase();
+    }
+
+    case "lower": {
+      const val = evaluate(args[0], env);
+      if (typeof val !== "string") return null;
+      return val.toLowerCase();
+    }
+
+    // Number operations
+    case "floor": {
+      const val = evaluate(args[0], env);
+      const n = asNum(val);
+      if (n === undefined) return null;
+      return Math.floor(n);
+    }
+
+    case "ceil": {
+      const val = evaluate(args[0], env);
+      const n = asNum(val);
+      if (n === undefined) return null;
+      return Math.ceil(n);
+    }
+
+    case "round": {
+      const val = evaluate(args[0], env);
+      const n = asNum(val);
+      if (n === undefined) return null;
+      return Math.round(n);
+    }
+
+    case "abs": {
+      const val = evaluate(args[0], env);
+      const n = asNum(val);
+      if (n === undefined) return null;
+      return Math.abs(n);
+    }
+
+    case "min": {
+      const a = asNum(evaluate(args[0], env)) ?? 0;
+      const b = asNum(evaluate(args[1], env)) ?? 0;
+      return Math.min(a, b);
+    }
+
+    case "max": {
+      const a = asNum(evaluate(args[0], env)) ?? 0;
+      const b = asNum(evaluate(args[1], env)) ?? 0;
+      return Math.max(a, b);
+    }
+
+    case "mod": {
+      const a = asNum(evaluate(args[0], env)) ?? 0;
+      const b = asNum(evaluate(args[1], env)) ?? 0;
+      return b !== 0 ? a % b : 0;
+    }
+
+    // Additional array operations
+    case "push": {
+      const arrVal = evaluate(args[0], env);
+      const value = evaluate(args[1], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      return [...arr, value];
+    }
+
+    case "nth": {
+      const arrVal = evaluate(args[0], env);
+      const idx = evaluate(args[1], env);
+      const arr = asArray(arrVal);
+      if (!arr || typeof idx !== "number") return null;
+      return arr[idx] ?? null;
+    }
+
+    case "range": {
+      const start = asNum(evaluate(args[0], env)) ?? 0;
+      const end = asNum(evaluate(args[1], env)) ?? 0;
+      const result: Value[] = [];
+      for (let i = start; i < end; i++) result.push(i);
+      return result;
+    }
+
+    case "flat": {
+      const arrVal = evaluate(args[0], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      const result: Value[] = [];
+      for (const elem of arr) {
+        const inner = asArray(elem);
+        if (inner) {
+          result.push(...inner);
+        } else {
+          result.push(elem);
+        }
+      }
+      return result;
+    }
+
+    case "sort": {
+      const arrVal = evaluate(args[0], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      return [...arr].sort((a, b) => {
+        if (typeof a === "number" && typeof b === "number") return a - b;
+        if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
+        return 0;
+      });
+    }
+
+    case "reverse": {
+      const arrVal = evaluate(args[0], env);
+      const arr = asArray(arrVal);
+      if (!arr) return null;
+      return [...arr].reverse();
+    }
+
     case "llm": {
       if (!env.llm) return null;
       const prompt = evaluate(args[0], env);

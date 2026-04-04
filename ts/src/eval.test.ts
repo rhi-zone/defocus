@@ -96,6 +96,120 @@ describe("Map/Filter/Reduce", () => {
   });
 });
 
+describe("Try (null coalescing)", () => {
+  test("null falls back to fallback", () => {
+    expect(evalExpr(["try", null, 42])).toBe(42);
+  });
+
+  test("non-null returns value", () => {
+    expect(evalExpr(["try", "hello", 42])).toBe("hello");
+  });
+
+  test("false is not null", () => {
+    expect(evalExpr(["try", false, 42])).toBe(false);
+  });
+});
+
+describe("Type checking", () => {
+  test("type returns correct type strings", () => {
+    expect(evalExpr(["type", null])).toBe("null");
+    expect(evalExpr(["type", true])).toBe("bool");
+    expect(evalExpr(["type", 42])).toBe("int");
+    expect(evalExpr(["type", 3.14])).toBe("float");
+    expect(evalExpr(["type", "hello"])).toBe("string");
+    expect(evalExpr(["type", [1, 2, 3]])).toBe("array");
+    expect(evalExpr(["type", ["record", "a", 1]])).toBe("record");
+  });
+
+  test("is checks type correctly", () => {
+    expect(evalExpr(["is", "string", "hello"])).toBe(true);
+    expect(evalExpr(["is", "int", "hello"])).toBe(false);
+    expect(evalExpr(["is", "null", null])).toBe(true);
+  });
+});
+
+describe("String operations", () => {
+  test("split and join round-trip", () => {
+    expect(evalExpr(["split", "a,b,c", ","])).toEqual(["a", "b", "c"]);
+    expect(evalExpr(["join", ["split", "a,b,c", ","], "-"])).toBe("a-b-c");
+  });
+
+  test("trim", () => {
+    expect(evalExpr(["trim", "  hello  "])).toBe("hello");
+  });
+
+  test("starts-with / ends-with", () => {
+    expect(evalExpr(["starts-with", "hello world", "hello"])).toBe(true);
+    expect(evalExpr(["starts-with", "hello world", "world"])).toBe(false);
+    expect(evalExpr(["ends-with", "hello world", "world"])).toBe(true);
+  });
+
+  test("slice string", () => {
+    expect(evalExpr(["slice", "hello", 1, 3])).toBe("el");
+    expect(evalExpr(["slice", "hello", 2])).toBe("llo");
+  });
+
+  test("upper / lower", () => {
+    expect(evalExpr(["upper", "hello"])).toBe("HELLO");
+    expect(evalExpr(["lower", "HELLO"])).toBe("hello");
+  });
+});
+
+describe("Number operations", () => {
+  test("floor/ceil/round", () => {
+    expect(evalExpr(["floor", 3.7])).toBe(3);
+    expect(evalExpr(["ceil", 3.2])).toBe(4);
+    expect(evalExpr(["round", 3.5])).toBe(4);
+    expect(evalExpr(["round", 3.4])).toBe(3);
+  });
+
+  test("abs", () => {
+    expect(evalExpr(["abs", -5])).toBe(5);
+    expect(evalExpr(["abs", 5])).toBe(5);
+  });
+
+  test("min/max", () => {
+    expect(evalExpr(["min", 3, 7])).toBe(3);
+    expect(evalExpr(["max", 3, 7])).toBe(7);
+  });
+
+  test("mod", () => {
+    expect(evalExpr(["mod", 10, 3])).toBe(1);
+  });
+});
+
+describe("Array operations (new)", () => {
+  test("push appends element", () => {
+    expect(evalExpr(["push", [1, 2], 3])).toEqual([1, 2, 3]);
+  });
+
+  test("nth gets element by index", () => {
+    expect(evalExpr(["nth", [10, 20, 30], 1])).toBe(20);
+    expect(evalExpr(["nth", [10, 20, 30], 5])).toBeNull();
+  });
+
+  test("range generates array", () => {
+    expect(evalExpr(["range", 0, 4])).toEqual([0, 1, 2, 3]);
+  });
+
+  test("flat flattens one level", () => {
+    expect(evalExpr(["flat", [[1, 2], [3, 4], 5]])).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test("sort numbers and strings", () => {
+    expect(evalExpr(["sort", [3, 1, 2]])).toEqual([1, 2, 3]);
+    expect(evalExpr(["sort", ["array", "c", "a", "b"]])).toEqual(["a", "b", "c"]);
+  });
+
+  test("reverse", () => {
+    expect(evalExpr(["reverse", [1, 2, 3]])).toEqual([3, 2, 1]);
+  });
+
+  test("slice array", () => {
+    expect(evalExpr(["slice", [10, 20, 30, 40], 1, 3])).toEqual([20, 30]);
+  });
+});
+
 describe("Record operations", () => {
   test("keys returns key array", () => {
     const result = evalExpr(["keys", ["record", "a", 1, "b", 2]]);

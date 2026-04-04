@@ -612,6 +612,313 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             Value::Null
         }
 
+        // Null coalescing: ["try", expr, fallback-expr]
+        "try" => {
+            let result = eval(&args[0], env);
+            if result == Value::Null {
+                eval(&args[1], env)
+            } else {
+                result
+            }
+        }
+
+        // Type checking
+        "type" => {
+            let val = eval(&args[0], env);
+            Value::String(
+                match &val {
+                    Value::Null => "null",
+                    Value::Bool(_) => "bool",
+                    Value::Int(_) => "int",
+                    Value::Float(_) => "float",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Record(_) => "record",
+                    Value::Ref { .. } => "ref",
+                }
+                .into(),
+            )
+        }
+
+        "is" => {
+            let type_name = eval(&args[0], env);
+            let val = eval(&args[1], env);
+            let Some(t) = type_name.as_str() else {
+                return Value::Bool(false);
+            };
+            Value::Bool(match t {
+                "null" => matches!(val, Value::Null),
+                "bool" => matches!(val, Value::Bool(_)),
+                "int" => matches!(val, Value::Int(_)),
+                "float" => matches!(val, Value::Float(_)),
+                "string" => matches!(val, Value::String(_)),
+                "array" => matches!(val, Value::Array(_)),
+                "record" => matches!(val, Value::Record(_)),
+                "ref" => matches!(val, Value::Ref { .. }),
+                _ => false,
+            })
+        }
+
+        // String operations
+        "split" => {
+            let val = eval(&args[0], env);
+            let sep = eval(&args[1], env);
+            let (Some(s), Some(sep)) = (val.as_str(), sep.as_str()) else {
+                return Value::Null;
+            };
+            Value::Array(s.split(sep).map(|p| Value::String(p.to_string())).collect())
+        }
+
+        "join" => {
+            let val = eval(&args[0], env);
+            let sep = eval(&args[1], env);
+            let (Some(arr), Some(sep)) = (val.as_array(), sep.as_str()) else {
+                return Value::Null;
+            };
+            let parts: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+            Value::String(parts.join(sep))
+        }
+
+        "trim" => {
+            let val = eval(&args[0], env);
+            let Some(s) = val.as_str() else {
+                return Value::Null;
+            };
+            Value::String(s.trim().to_string())
+        }
+
+        "starts-with" => {
+            let val = eval(&args[0], env);
+            let prefix = eval(&args[1], env);
+            let (Some(s), Some(p)) = (val.as_str(), prefix.as_str()) else {
+                return Value::Bool(false);
+            };
+            Value::Bool(s.starts_with(p))
+        }
+
+        "ends-with" => {
+            let val = eval(&args[0], env);
+            let suffix = eval(&args[1], env);
+            let (Some(s), Some(sf)) = (val.as_str(), suffix.as_str()) else {
+                return Value::Bool(false);
+            };
+            Value::Bool(s.ends_with(sf))
+        }
+
+        "slice" => {
+            let val = eval(&args[0], env);
+            let start = eval(&args[1], env).as_i64().unwrap_or(0) as usize;
+            let end_val = if args.len() > 2 {
+                eval(&args[2], env)
+            } else {
+                Value::Null
+            };
+            match &val {
+                Value::String(s) => {
+                    let len = s.len();
+                    let end = end_val.as_i64().map(|n| n as usize).unwrap_or(len);
+                    let start = start.min(len);
+                    let end = end.min(len);
+                    if start > end {
+                        Value::String(String::new())
+                    } else {
+                        Value::String(s[start..end].to_string())
+                    }
+                }
+                Value::Array(a) => {
+                    let len = a.len();
+                    let end = end_val.as_i64().map(|n| n as usize).unwrap_or(len);
+                    let start = start.min(len);
+                    let end = end.min(len);
+                    if start > end {
+                        Value::Array(vec![])
+                    } else {
+                        Value::Array(a[start..end].to_vec())
+                    }
+                }
+                _ => Value::Null,
+            }
+        }
+
+        "upper" => {
+            let val = eval(&args[0], env);
+            let Some(s) = val.as_str() else {
+                return Value::Null;
+            };
+            Value::String(s.to_uppercase())
+        }
+
+        "lower" => {
+            let val = eval(&args[0], env);
+            let Some(s) = val.as_str() else {
+                return Value::Null;
+            };
+            Value::String(s.to_lowercase())
+        }
+
+        // Number operations
+        "floor" => {
+            let val = eval(&args[0], env);
+            match &val {
+                Value::Int(_) => val,
+                Value::Float(n) => Value::Int(n.floor() as i64),
+                _ => Value::Null,
+            }
+        }
+
+        "ceil" => {
+            let val = eval(&args[0], env);
+            match &val {
+                Value::Int(_) => val,
+                Value::Float(n) => Value::Int(n.ceil() as i64),
+                _ => Value::Null,
+            }
+        }
+
+        "round" => {
+            let val = eval(&args[0], env);
+            match &val {
+                Value::Int(_) => val,
+                Value::Float(n) => Value::Int(n.round() as i64),
+                _ => Value::Null,
+            }
+        }
+
+        "abs" => {
+            let val = eval(&args[0], env);
+            match &val {
+                Value::Int(n) => Value::Int(n.abs()),
+                Value::Float(n) => Value::Float(n.abs()),
+                _ => Value::Null,
+            }
+        }
+
+        "min" => {
+            let a = eval(&args[0], env);
+            let b = eval(&args[1], env);
+            match (&a, &b) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
+                _ => {
+                    let x = a.as_f64().unwrap_or(0.0);
+                    let y = b.as_f64().unwrap_or(0.0);
+                    Value::Float(x.min(y))
+                }
+            }
+        }
+
+        "max" => {
+            let a = eval(&args[0], env);
+            let b = eval(&args[1], env);
+            match (&a, &b) {
+                (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
+                _ => {
+                    let x = a.as_f64().unwrap_or(0.0);
+                    let y = b.as_f64().unwrap_or(0.0);
+                    Value::Float(x.max(y))
+                }
+            }
+        }
+
+        "mod" => {
+            let a = eval(&args[0], env);
+            let b = eval(&args[1], env);
+            match (&a, &b) {
+                (Value::Int(x), Value::Int(y)) => {
+                    if *y != 0 {
+                        Value::Int(x % y)
+                    } else {
+                        Value::Int(0)
+                    }
+                }
+                _ => {
+                    let x = a.as_f64().unwrap_or(0.0);
+                    let y = b.as_f64().unwrap_or(0.0);
+                    Value::Float(x % y)
+                }
+            }
+        }
+
+        // Additional array operations
+        "push" => {
+            let arr_val = eval(&args[0], env);
+            let value = eval(&args[1], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let mut new_arr = arr.to_vec();
+            new_arr.push(value);
+            Value::Array(new_arr)
+        }
+
+        "nth" => {
+            let arr_val = eval(&args[0], env);
+            let idx = eval(&args[1], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let Some(i) = idx.as_i64() else {
+                return Value::Null;
+            };
+            arr.get(i as usize).cloned().unwrap_or(Value::Null)
+        }
+
+        "range" => {
+            let start = eval(&args[0], env).as_i64().unwrap_or(0);
+            let end = eval(&args[1], env).as_i64().unwrap_or(0);
+            Value::Array((start..end).map(Value::Int).collect())
+        }
+
+        "flat" => {
+            let arr_val = eval(&args[0], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let mut result = Vec::new();
+            for elem in arr {
+                if let Some(inner) = elem.as_array() {
+                    result.extend(inner.iter().cloned());
+                } else {
+                    result.push(elem.clone());
+                }
+            }
+            Value::Array(result)
+        }
+
+        "sort" => {
+            let arr_val = eval(&args[0], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let mut sorted = arr.to_vec();
+            sorted.sort_by(|a, b| {
+                match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => x.cmp(y),
+                    (Value::Float(x), Value::Float(y)) => {
+                        x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    (Value::Int(x), Value::Float(y)) => {
+                        (*x as f64).partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    (Value::Float(x), Value::Int(y)) => {
+                        x.partial_cmp(&(*y as f64)).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    (Value::String(x), Value::String(y)) => x.cmp(y),
+                    _ => std::cmp::Ordering::Equal,
+                }
+            });
+            Value::Array(sorted)
+        }
+
+        "reverse" => {
+            let arr_val = eval(&args[0], env);
+            let Some(arr) = arr_val.as_array() else {
+                return Value::Null;
+            };
+            let mut reversed = arr.to_vec();
+            reversed.reverse();
+            Value::Array(reversed)
+        }
+
         // LLM call: ["llm", prompt-expr]
         "llm" => {
             if let Some(provider) = env.llm {
@@ -1076,6 +1383,203 @@ mod tests {
             Value::Record(m)
         };
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_try_null_coalescing() {
+        let mut env = Env::new(None);
+        // null falls back to 42
+        let result = eval(&val(json!(["try", null, 42])), &mut env);
+        assert_eq!(result, Value::Int(42));
+        // non-null returns the value
+        let result = eval(&val(json!(["try", "hello", 42])), &mut env);
+        assert_eq!(result, Value::String("hello".into()));
+        // false is not null, should return false
+        let result = eval(&val(json!(["try", false, 42])), &mut env);
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_type_checking() {
+        let mut env = Env::new(None);
+        assert_eq!(
+            eval(&val(json!(["type", null])), &mut env),
+            Value::String("null".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["type", true])), &mut env),
+            Value::String("bool".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["type", 42])), &mut env),
+            Value::String("int".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["type", 2.5])), &mut env),
+            Value::String("float".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["type", "hello"])), &mut env),
+            Value::String("string".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["type", [1, 2, 3]])), &mut env),
+            Value::String("array".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["type", ["record", "a", 1]])), &mut env),
+            Value::String("record".into())
+        );
+    }
+
+    #[test]
+    fn test_is() {
+        let mut env = Env::new(None);
+        assert_eq!(
+            eval(&val(json!(["is", "string", "hello"])), &mut env),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval(&val(json!(["is", "int", "hello"])), &mut env),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval(&val(json!(["is", "null", null])), &mut env),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn test_string_ops() {
+        let mut env = Env::new(None);
+
+        // split and join round-trip
+        let split = eval(&val(json!(["split", "a,b,c", ","])), &mut env);
+        assert_eq!(
+            split,
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ])
+        );
+        let joined = eval(&val(json!(["join", ["split", "a,b,c", ","], "-"])), &mut env);
+        assert_eq!(joined, Value::String("a-b-c".into()));
+
+        // trim
+        assert_eq!(
+            eval(&val(json!(["trim", "  hello  "])), &mut env),
+            Value::String("hello".into())
+        );
+
+        // starts-with / ends-with
+        assert_eq!(
+            eval(&val(json!(["starts-with", "hello world", "hello"])), &mut env),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval(&val(json!(["starts-with", "hello world", "world"])), &mut env),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval(&val(json!(["ends-with", "hello world", "world"])), &mut env),
+            Value::Bool(true)
+        );
+
+        // slice
+        assert_eq!(
+            eval(&val(json!(["slice", "hello", 1, 3])), &mut env),
+            Value::String("el".into())
+        );
+        // slice without end
+        assert_eq!(
+            eval(&val(json!(["slice", "hello", 2])), &mut env),
+            Value::String("llo".into())
+        );
+
+        // upper / lower
+        assert_eq!(
+            eval(&val(json!(["upper", "hello"])), &mut env),
+            Value::String("HELLO".into())
+        );
+        assert_eq!(
+            eval(&val(json!(["lower", "HELLO"])), &mut env),
+            Value::String("hello".into())
+        );
+    }
+
+    #[test]
+    fn test_number_ops() {
+        let mut env = Env::new(None);
+
+        assert_eq!(eval(&val(json!(["floor", 3.7])), &mut env), Value::Int(3));
+        assert_eq!(eval(&val(json!(["ceil", 3.2])), &mut env), Value::Int(4));
+        assert_eq!(eval(&val(json!(["round", 3.5])), &mut env), Value::Int(4));
+        assert_eq!(eval(&val(json!(["round", 3.4])), &mut env), Value::Int(3));
+        assert_eq!(eval(&val(json!(["abs", -5])), &mut env), Value::Int(5));
+        assert_eq!(eval(&val(json!(["abs", 5])), &mut env), Value::Int(5));
+        assert_eq!(eval(&val(json!(["min", 3, 7])), &mut env), Value::Int(3));
+        assert_eq!(eval(&val(json!(["max", 3, 7])), &mut env), Value::Int(7));
+        assert_eq!(eval(&val(json!(["mod", 10, 3])), &mut env), Value::Int(1));
+    }
+
+    #[test]
+    fn test_array_ops() {
+        let mut env = Env::new(None);
+
+        // push
+        assert_eq!(
+            eval(&val(json!(["push", [1, 2], 3])), &mut env),
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+
+        // nth
+        assert_eq!(eval(&val(json!(["nth", [10, 20, 30], 1])), &mut env), Value::Int(20));
+        assert_eq!(eval(&val(json!(["nth", [10, 20, 30], 5])), &mut env), Value::Null);
+
+        // range
+        assert_eq!(
+            eval(&val(json!(["range", 0, 4])), &mut env),
+            Value::Array(vec![Value::Int(0), Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+
+        // flat
+        assert_eq!(
+            eval(&val(json!(["flat", [[1, 2], [3, 4], 5]])), &mut env),
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5),
+            ])
+        );
+
+        // sort
+        assert_eq!(
+            eval(&val(json!(["sort", [3, 1, 2]])), &mut env),
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+        assert_eq!(
+            eval(&val(json!(["sort", ["array", "c", "a", "b"]])), &mut env),
+            Value::Array(vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+            ])
+        );
+
+        // reverse
+        assert_eq!(
+            eval(&val(json!(["reverse", [1, 2, 3]])), &mut env),
+            Value::Array(vec![Value::Int(3), Value::Int(2), Value::Int(1)])
+        );
+
+        // slice on array
+        assert_eq!(
+            eval(&val(json!(["slice", [10, 20, 30, 40], 1, 3])), &mut env),
+            Value::Array(vec![Value::Int(20), Value::Int(30)])
+        );
     }
 
     #[test]
