@@ -1,7 +1,9 @@
+use crate::llm::LlmProvider;
 use crate::log::{Event, EventLog};
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 pub type Identity = String;
 pub type Expr = Value;
@@ -111,7 +113,7 @@ pub enum Effect {
     Reply { value: Value },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct World {
     pub objects: BTreeMap<Identity, Object>,
     #[serde(default)]
@@ -122,6 +124,21 @@ pub struct World {
     pub queue: VecDeque<(Identity, Message, Option<Identity>)>,
     #[serde(skip)]
     pub log: Option<EventLog>,
+    #[serde(skip)]
+    pub llm: Option<Arc<dyn LlmProvider>>,
+}
+
+impl std::fmt::Debug for World {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("World")
+            .field("objects", &self.objects)
+            .field("tick", &self.tick)
+            .field("schedule", &self.schedule)
+            .field("queue", &self.queue)
+            .field("log", &self.log)
+            .field("llm", &self.llm.as_ref().map(|_| "<provider>"))
+            .finish()
+    }
 }
 
 impl World {
@@ -132,7 +149,14 @@ impl World {
             schedule: BTreeMap::new(),
             queue: VecDeque::new(),
             log: None,
+            llm: None,
         }
+    }
+
+    /// Set the LLM provider for this world. Handlers can use `["llm", prompt-expr]`
+    /// to call the provider during evaluation.
+    pub fn set_llm(&mut self, provider: impl LlmProvider + 'static) {
+        self.llm = Some(Arc::new(provider));
     }
 
     pub fn add(&mut self, object: Object) {
@@ -196,12 +220,13 @@ impl World {
             return Some(Vec::new());
         };
 
-        let effects = crate::eval::eval_handler(
+        let effects = crate::eval::eval_handler_with_llm(
             &handler,
             &message.payload,
             &state_value,
             &target_id,
             sender.as_deref(),
+            self.llm.as_deref(),
         );
 
         let mut replies = Vec::new();
@@ -434,6 +459,7 @@ impl Default for World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::MockProvider;
 
     fn val(j: serde_json::Value) -> Value {
         serde_json::from_value(j).unwrap()
@@ -720,5 +746,144 @@ mod tests {
         assert_eq!(json, r#"{"$ref":"local:frame"}"#);
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, v);
+    }
+
+    #[test]
+    fn test_llm_call_returns_response_and_replies() {
+        let mut world = World::new();
+        world.set_llm(
+            MockProvider::new("I don't understand.")
+                .with_response("hello", "Greetings, traveler!"),
+        );
+
+        // NPC uses LLM to generate a response and replies with it
+        let npc = Object::new("local:npc").with_handler(
+            "talk",
+            val(serde_json::json!([
+                "let", "response",
+                ["llm", ["concat", "The player says: ", ["get", "payload"]]],
+                ["do",
+                    ["perform", "set", "last-response", ["get", "response"]],
+                    ["perform", "reply", ["get", "response"]]
+                ]
+            ])),
+        );
+        world.add(npc);
+        world.send(
+            "local:npc".into(),
+            Message {
+                verb: "talk".into(),
+                payload: Value::String("hello".into()),
+            },
+        );
+
+        let replies = world.drain(100);
+        assert_eq!(replies, vec![Value::String("Greetings, traveler!".into())]);
+        assert_eq!(
+            world
+                .objects
+                .get("local:npc")
+                .unwrap()
+                .state
+                .get("last-response"),
+            Some(&Value::String("Greetings, traveler!".into()))
+        );
+    }
+
+    #[test]
+    fn test_llm_no_provider_returns_null() {
+        let mut world = World::new();
+        // No LLM provider set — ["llm", ...] returns null
+
+        let npc = Object::new("local:npc").with_handler(
+            "talk",
+            val(serde_json::json!([
+                "let", "response", ["llm", "anything"],
+                ["if", ["get", "response"],
+                    ["perform", "reply", ["get", "response"]],
+                    ["perform", "reply", "I have nothing to say."]
+                ]
+            ])),
+        );
+        world.add(npc);
+        world.send(
+            "local:npc".into(),
+            Message {
+                verb: "talk".into(),
+                payload: Value::Null,
+            },
+        );
+
+        let replies = world.drain(100);
+        assert_eq!(
+            replies,
+            vec![Value::String("I have nothing to say.".into())]
+        );
+    }
+
+    #[test]
+    fn test_llm_driven_npc_stores_state() {
+        let mut world = World::new();
+        world.set_llm(
+            MockProvider::new("*silence*")
+                .with_response("greet", "Welcome to my shop!")
+                .with_response("buy", "That'll be 10 gold."),
+        );
+
+        // NPC talk handler uses LLM for dynamic response, stores in state
+        let npc = Object::new("local:shopkeeper")
+            .with_state("interaction-count", Value::Int(0))
+            .with_handler(
+                "talk",
+                val(serde_json::json!([
+                    "let", "response",
+                    ["llm", ["concat", "Action: ", ["get", "payload"]]],
+                    ["do",
+                        ["perform", "set", "last-response", ["get", "response"]],
+                        ["perform", "set", "interaction-count",
+                            ["+", ["get-in", ["get", "state"], "interaction-count"], 1]],
+                        ["perform", "reply", ["get", "response"]]
+                    ]
+                ])),
+            );
+        world.add(npc);
+
+        // First interaction
+        world.send(
+            "local:shopkeeper".into(),
+            Message {
+                verb: "talk".into(),
+                payload: Value::String("greet".into()),
+            },
+        );
+        let replies = world.drain(100);
+        assert_eq!(
+            replies,
+            vec![Value::String("Welcome to my shop!".into())]
+        );
+
+        // Second interaction
+        world.send(
+            "local:shopkeeper".into(),
+            Message {
+                verb: "talk".into(),
+                payload: Value::String("buy sword".into()),
+            },
+        );
+        let replies = world.drain(100);
+        assert_eq!(
+            replies,
+            vec![Value::String("That'll be 10 gold.".into())]
+        );
+
+        let shopkeeper = world.objects.get("local:shopkeeper").unwrap();
+        assert_eq!(
+            shopkeeper.state.get("interaction-count"),
+            Some(&Value::Int(2))
+        );
+        assert_eq!(
+            shopkeeper.state.get("last-response"),
+            Some(&Value::String("That'll be 10 gold.".into()))
+        );
     }
 }

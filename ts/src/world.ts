@@ -1,6 +1,7 @@
 import type { Value, Expr, Identity } from "./value.js";
-import { evalHandler } from "./eval.js";
+import { evalHandler, evalHandlerWithLlm } from "./eval.js";
 import type { Event, EventLog } from "./log.js";
+import type { LlmProvider } from "./llm.js";
 
 export interface Message {
   verb: string;
@@ -38,6 +39,7 @@ export class World {
   schedule = new Map<number, Array<[Identity, Message]>>();
   queue: Array<[Identity, Message, Identity | undefined]> = [];
   log: EventLog | null = null;
+  llm: LlmProvider | null = null;
 
   add(object: DefocusObject): void {
     this.objects.set(object.id, object);
@@ -86,12 +88,13 @@ export class World {
       return [];
     }
 
-    const effects = evalHandler(
+    const effects = evalHandlerWithLlm(
       handler,
       message.payload,
       object.state,
       targetId,
       sender,
+      this.llm,
     );
 
     const replies: Value[] = [];

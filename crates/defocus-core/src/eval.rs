@@ -1,18 +1,20 @@
+use crate::llm::LlmProvider;
 use crate::value::Value;
 use crate::world::{Effect, Expr, Identity, Message, Object};
 use std::collections::BTreeMap;
 
-#[derive(Debug)]
-struct Env {
+struct Env<'a> {
     bindings: Vec<(String, Value)>,
     effects: Vec<Effect>,
+    llm: Option<&'a dyn LlmProvider>,
 }
 
-impl Env {
-    fn new() -> Self {
+impl<'a> Env<'a> {
+    fn new(llm: Option<&'a dyn LlmProvider>) -> Self {
         Env {
             bindings: Vec::new(),
             effects: Vec::new(),
+            llm,
         }
     }
 
@@ -45,7 +47,18 @@ pub fn eval_handler(
     self_id: &str,
     sender: Option<&str>,
 ) -> Vec<Effect> {
-    let mut env = Env::new();
+    eval_handler_with_llm(handler, payload, state, self_id, sender, None)
+}
+
+pub fn eval_handler_with_llm(
+    handler: &Expr,
+    payload: &Value,
+    state: &Value,
+    self_id: &str,
+    sender: Option<&str>,
+    llm: Option<&dyn LlmProvider>,
+) -> Vec<Effect> {
+    let mut env = Env::new(llm);
     env.bind(
         "self".into(),
         Value::Ref {
@@ -455,6 +468,20 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             Value::Null
         }
 
+        // LLM call: ["llm", prompt-expr]
+        "llm" => {
+            if let Some(provider) = env.llm {
+                let prompt = eval(&args[0], env);
+                let prompt_str = prompt.to_string();
+                match provider.complete(&prompt_str) {
+                    Ok(response) => Value::String(response),
+                    Err(_) => Value::Null,
+                }
+            } else {
+                Value::Null
+            }
+        }
+
         // Unknown op — return null
         _ => Value::Null,
     }
@@ -665,7 +692,7 @@ mod tests {
             ["fn", ["a", "b"], ["+", ["get", "a"], ["get", "b"]]],
             ["call", ["get", "add"], 3, 4]
         ]));
-        let mut env = Env::new();
+        let mut env = Env::new(None);
         let result = eval(&handler, &mut env);
         assert_eq!(result, Value::Int(7));
     }
@@ -674,7 +701,7 @@ mod tests {
     fn test_fn_no_args() {
         // ["call", ["fn", [], 42]]
         let handler = val(json!(["call", ["fn", [], 42]]));
-        let mut env = Env::new();
+        let mut env = Env::new(None);
         let result = eval(&handler, &mut env);
         assert_eq!(result, Value::Int(42));
     }
@@ -688,7 +715,7 @@ mod tests {
             ["a", "b"],
             ["+", ["get", "a"], ["get", "b"]]
         ]));
-        let mut env = Env::new();
+        let mut env = Env::new(None);
         env.bind("state".into(), state);
         let result = eval(&handler, &mut env);
         assert_eq!(result, Value::Int(30));
@@ -704,7 +731,7 @@ mod tests {
             ["fn", ["x"], ["+", ["get", "x"], ["get", "x"]]],
             ["call", ["get", "double"], ["call", ["get", "double"], 3]]
         ]));
-        let mut env = Env::new();
+        let mut env = Env::new(None);
         let result = eval(&handler, &mut env);
         assert_eq!(result, Value::Int(12));
     }

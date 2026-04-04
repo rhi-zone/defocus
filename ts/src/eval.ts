@@ -1,14 +1,16 @@
 import type { Value, Expr } from "./value.js";
 import { isTruthy, asStr, asNum, asArray, asRecord, asRef, isRef, refVerbs } from "./value.js";
 import type { DefocusObject, Effect, Message } from "./world.js";
+import type { LlmProvider } from "./llm.js";
 
 interface Env {
   bindings: Array<[string, Value]>;
   effects: Effect[];
+  llm: LlmProvider | null;
 }
 
-function envNew(): Env {
-  return { bindings: [], effects: [] };
+function envNew(llm: LlmProvider | null = null): Env {
+  return { bindings: [], effects: [], llm };
 }
 
 function envBind(env: Env, name: string, value: Value): void {
@@ -37,7 +39,18 @@ export function evalHandler(
   selfId: string = "",
   sender: string | undefined = undefined,
 ): Effect[] {
-  const env = envNew();
+  return evalHandlerWithLlm(handler, payload, state, selfId, sender, null);
+}
+
+export function evalHandlerWithLlm(
+  handler: Expr,
+  payload: Value,
+  state: Value,
+  selfId: string = "",
+  sender: string | undefined = undefined,
+  llm: LlmProvider | null = null,
+): Effect[] {
+  const env = envNew(llm);
   envBind(env, "self", { $ref: selfId });
   envBind(env, "sender", sender !== undefined ? { $ref: sender } : null);
   envBind(env, "payload", payload);
@@ -337,6 +350,17 @@ function evalCall(op: string, args: Value[], env: Env): Value {
           break;
         }
       }
+      return null;
+    }
+
+    case "llm": {
+      if (!env.llm) return null;
+      const prompt = evaluate(args[0], env);
+      const promptStr = String(prompt ?? "null");
+      const result = env.llm.complete(promptStr);
+      // Only support synchronous providers in the sync eval path.
+      // If complete() returns a Promise, return null.
+      if (typeof result === "string") return result;
       return null;
     }
 
