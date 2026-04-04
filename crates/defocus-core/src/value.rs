@@ -14,7 +14,11 @@ pub enum Value {
     Array(Vec<Value>),
     Record(BTreeMap<String, Value>),
     /// A capability reference to another object by ID.
-    Ref(String),
+    /// `verbs: None` means unrestricted; `Some(vec)` restricts to those verbs.
+    Ref {
+        id: String,
+        verbs: Option<Vec<String>>,
+    },
 }
 
 impl Serialize for Value {
@@ -27,10 +31,14 @@ impl Serialize for Value {
             Value::String(s) => serializer.serialize_str(s),
             Value::Array(a) => a.serialize(serializer),
             Value::Record(r) => r.serialize(serializer),
-            Value::Ref(id) => {
+            Value::Ref { id, verbs } => {
                 use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(1))?;
+                let size = if verbs.is_some() { 2 } else { 1 };
+                let mut map = serializer.serialize_map(Some(size))?;
                 map.serialize_entry("$ref", id)?;
+                if let Some(v) = verbs {
+                    map.serialize_entry("$verbs", v)?;
+                }
                 map.end()
             }
         }
@@ -95,13 +103,45 @@ impl<'de> Deserialize<'de> for Value {
                 while let Some((key, value)) = map.next_entry::<String, crate::value::Value>()? {
                     btree.insert(key, value);
                 }
-                // If the record has exactly one key "$ref" with a string value, treat as Ref
-                if btree.len() == 1 {
+                // If the record has "$ref" with a string value, treat as Ref
+                if btree.contains_key("$ref") {
                     if let Some(crate::value::Value::String(id)) = btree.remove("$ref") {
-                        return Ok(crate::value::Value::Ref(id));
+                        let verbs = btree.remove("$verbs").and_then(|v| {
+                            if let crate::value::Value::Array(arr) = v {
+                                let strs: Vec<String> = arr
+                                    .into_iter()
+                                    .filter_map(|item| {
+                                        if let crate::value::Value::String(s) = item {
+                                            Some(s)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                if strs.is_empty() {
+                                    None
+                                } else {
+                                    Some(strs)
+                                }
+                            } else {
+                                None
+                            }
+                        });
+                        // Only treat as Ref if no other keys remain
+                        if btree.is_empty() {
+                            return Ok(crate::value::Value::Ref { id, verbs });
+                        }
+                        // Put keys back
+                        btree.insert("$ref".to_string(), crate::value::Value::String(id));
+                        if let Some(v) = verbs {
+                            btree.insert(
+                                "$verbs".to_string(),
+                                crate::value::Value::Array(
+                                    v.into_iter().map(crate::value::Value::String).collect(),
+                                ),
+                            );
+                        }
                     }
-                    // Put it back if we removed but it wasn't a string
-                    // (won't happen since we only enter if it was String, but for safety)
                 }
                 Ok(crate::value::Value::Record(btree))
             }
@@ -121,7 +161,7 @@ impl Value {
             Value::String(s) => !s.is_empty(),
             Value::Array(a) => !a.is_empty(),
             Value::Record(r) => !r.is_empty(),
-            Value::Ref(_) => true,
+            Value::Ref { .. } => true,
         }
     }
 
@@ -134,7 +174,16 @@ impl Value {
 
     pub fn as_ref_id(&self) -> Option<&str> {
         match self {
-            Value::Ref(id) => Some(id),
+            Value::Ref { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn ref_verbs(&self) -> Option<&[String]> {
+        match self {
+            Value::Ref {
+                verbs: Some(v), ..
+            } => Some(v),
             _ => None,
         }
     }
@@ -198,7 +247,11 @@ impl fmt::Display for Value {
             Value::Array(_) | Value::Record(_) => {
                 write!(f, "{}", serde_json::to_string(self).unwrap_or_default())
             }
-            Value::Ref(id) => write!(f, "<ref:{id}>"),
+            Value::Ref { id, verbs: None } => write!(f, "<ref:{id}>"),
+            Value::Ref {
+                id,
+                verbs: Some(v),
+            } => write!(f, "<ref:{id}[{}]>", v.join(",")),
         }
     }
 }

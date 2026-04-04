@@ -3,7 +3,7 @@ import { World, createObject } from "./world.js";
 import { evalHandler } from "./eval.js";
 import type { DefocusObject, Effect } from "./world.js";
 import type { Value, Expr } from "./value.js";
-import { isRef, asRef, isTruthy } from "./value.js";
+import { isRef, asRef, isTruthy, refVerbs } from "./value.js";
 
 function sendMsg(world: World, to: string, verb: string, payload: Value = null): Value[] {
   world.send(to, { verb, payload });
@@ -926,5 +926,350 @@ describe("World", () => {
     // Should not infinite loop
     const replies = sendMsg(world, "local:a", "greet");
     expect(replies.length).toBe(0);
+  });
+
+  // --- Capability Attenuation Tests ---
+
+  test("attenuated ref allows permitted verb", () => {
+    const world = new World();
+
+    const door: DefocusObject = {
+      id: "local:door",
+      state: { open: false, frame: { $ref: "local:frame", $verbs: ["door-opened"] } },
+      handlers: {
+        open: [
+          "do",
+          ["perform", "set", "open", true],
+          ["perform", "send", ["get-in", ["get", "state"], "frame"], "door-opened", null],
+        ],
+      },
+      interface: ["open"],
+      children: [],
+      prototype: null,
+    };
+
+    const frame: DefocusObject = {
+      id: "local:frame",
+      state: { doorOpen: false },
+      handlers: {
+        "door-opened": ["perform", "set", "doorOpen", true],
+      },
+      interface: ["door-opened"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(door);
+    world.add(frame);
+    sendMsg(world, "local:door", "open");
+
+    expect(world.objects.get("local:door")!.state.open).toBe(true);
+    expect(world.objects.get("local:frame")!.state.doorOpen).toBe(true);
+  });
+
+  test("attenuated ref blocks forbidden verb", () => {
+    const world = new World();
+
+    const door: DefocusObject = {
+      id: "local:door",
+      state: { frame: { $ref: "local:frame", $verbs: ["door-opened"] } },
+      handlers: {
+        reset: [
+          "perform", "send", ["get-in", ["get", "state"], "frame"], "destroy", null,
+        ],
+      },
+      interface: ["reset"],
+      children: [],
+      prototype: null,
+    };
+
+    const frame: DefocusObject = {
+      id: "local:frame",
+      state: { destroyed: false },
+      handlers: {
+        destroy: ["perform", "set", "destroyed", true],
+      },
+      interface: ["destroy"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(door);
+    world.add(frame);
+    sendMsg(world, "local:door", "reset");
+
+    // "destroy" should be silently dropped
+    expect(world.objects.get("local:frame")!.state.destroyed).toBe(false);
+  });
+
+  test("attenuate op restricts further", () => {
+    const world = new World();
+
+    const obj: DefocusObject = {
+      id: "local:obj",
+      state: { target: { $ref: "local:target" } },
+      handlers: {
+        test: [
+          "do",
+          ["let", "narrow",
+            ["attenuate", ["get-in", ["get", "state"], "target"], ["array", "open", "close"]],
+            ["let", "narrower",
+              ["attenuate", ["get", "narrow"], ["array", "open"]],
+              ["do",
+                ["perform", "send", ["get", "narrower"], "close", null],
+                ["perform", "send", ["get", "narrower"], "open", null],
+              ],
+            ],
+          ],
+        ],
+      },
+      interface: ["test"],
+      children: [],
+      prototype: null,
+    };
+
+    const target: DefocusObject = {
+      id: "local:target",
+      state: { opened: false, closed: false },
+      handlers: {
+        open: ["perform", "set", "opened", true],
+        close: ["perform", "set", "closed", true],
+      },
+      interface: ["open", "close"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(obj);
+    world.add(target);
+    sendMsg(world, "local:obj", "test");
+
+    // "close" should be dropped, "open" should succeed
+    expect(world.objects.get("local:target")!.state.opened).toBe(true);
+    expect(world.objects.get("local:target")!.state.closed).toBe(false);
+  });
+
+  test("attenuated ref serialization round-trip", () => {
+    const world = new World();
+
+    const obj: DefocusObject = {
+      id: "local:obj",
+      state: { target: { $ref: "local:other", $verbs: ["open", "close"] } },
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(obj);
+
+    const json = world.toJSON() as any;
+    expect(json.objects["local:obj"].state.target.$ref).toBe("local:other");
+    expect(json.objects["local:obj"].state.target.$verbs).toEqual(["open", "close"]);
+
+    // Round-trip through JSON string
+    const str = JSON.stringify(json);
+    const restored = World.fromJSON(JSON.parse(str));
+    const restoredObj = restored.objects.get("local:obj")!;
+    expect(isRef(restoredObj.state.target)).toBe(true);
+    expect(asRef(restoredObj.state.target)).toBe("local:other");
+    expect(refVerbs(restoredObj.state.target)).toEqual(["open", "close"]);
+  });
+
+  test("unrestricted ref still works (backward compat)", () => {
+    const world = new World();
+
+    const door: DefocusObject = {
+      id: "local:door",
+      state: { open: false, frame: { $ref: "local:frame" } },
+      handlers: {
+        open: [
+          "do",
+          ["perform", "set", "open", true],
+          ["perform", "send", ["get-in", ["get", "state"], "frame"], "door-opened", null],
+        ],
+      },
+      interface: ["open"],
+      children: [],
+      prototype: null,
+    };
+
+    const frame: DefocusObject = {
+      id: "local:frame",
+      state: { doorOpen: false },
+      handlers: {
+        "door-opened": ["perform", "set", "doorOpen", true],
+      },
+      interface: ["door-opened"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(door);
+    world.add(frame);
+    sendMsg(world, "local:door", "open");
+
+    expect(world.objects.get("local:door")!.state.open).toBe(true);
+    expect(world.objects.get("local:frame")!.state.doorOpen).toBe(true);
+  });
+
+  test("isRef recognizes attenuated refs", () => {
+    expect(isRef({ $ref: "local:a", $verbs: ["open"] })).toBe(true);
+    expect(isRef({ $ref: "local:a" })).toBe(true);
+    expect(isRef({ $ref: "local:a", $verbs: ["open"], extra: 1 })).toBe(false);
+    expect(refVerbs({ $ref: "local:a", $verbs: ["open", "close"] })).toEqual(["open", "close"]);
+    expect(refVerbs({ $ref: "local:a" })).toBeUndefined();
+  });
+
+  // --- Scheduler Tests ---
+
+  test("schedule and advance", () => {
+    const world = new World();
+
+    const obj: DefocusObject = {
+      id: "local:obj",
+      state: { received: false },
+      handlers: {
+        ping: ["perform", "set", "received", true],
+      },
+      interface: ["ping"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(obj);
+
+    // Schedule a message at tick 5
+    world.schedule.set(5, [["local:obj", { verb: "ping", payload: null }]]);
+
+    // Advance to tick 4 — not yet delivered
+    world.advance(4);
+    expect(world.objects.get("local:obj")!.state.received).toBe(false);
+
+    // Advance to tick 5 — delivered
+    world.advance(5);
+    expect(world.objects.get("local:obj")!.state.received).toBe(true);
+  });
+
+  test("schedule multiple ticks", () => {
+    const world = new World();
+
+    const obj: DefocusObject = {
+      id: "local:obj",
+      state: { count: 0 },
+      handlers: {
+        bump: [
+          "perform", "set", "count",
+          ["+", ["get-in", ["get", "state"], "count"], 1],
+        ],
+      },
+      interface: ["bump"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(obj);
+
+    // Schedule at tick 3 and tick 7
+    world.schedule.set(3, [["local:obj", { verb: "bump", payload: null }]]);
+    world.schedule.set(7, [["local:obj", { verb: "bump", payload: null }]]);
+
+    // Advance to 5 — only tick 3 fires
+    world.advance(5);
+    expect(world.objects.get("local:obj")!.state.count).toBe(1);
+
+    // Advance to 10 — tick 7 fires
+    world.advance(10);
+    expect(world.objects.get("local:obj")!.state.count).toBe(2);
+  });
+
+  test("schedule from handler", () => {
+    const world = new World();
+
+    // Object A schedules a delayed message to object B
+    const a: DefocusObject = {
+      id: "local:a",
+      state: {},
+      handlers: {
+        trigger: ["perform", "schedule", 5, "local:b", "ping", null],
+      },
+      interface: ["trigger"],
+      children: [],
+      prototype: null,
+    };
+
+    const b: DefocusObject = {
+      id: "local:b",
+      state: { pinged: false },
+      handlers: {
+        ping: ["perform", "set", "pinged", true],
+      },
+      interface: ["ping"],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(a);
+    world.add(b);
+
+    // Send trigger — this schedules the message, doesn't deliver it yet
+    sendMsg(world, "local:a", "trigger");
+    expect(world.objects.get("local:b")!.state.pinged).toBe(false);
+
+    // Advance to tick 5 — now it fires
+    world.advance(5);
+    expect(world.objects.get("local:b")!.state.pinged).toBe(true);
+  });
+
+  test("advance without scheduled messages", () => {
+    const world = new World();
+
+    const obj: DefocusObject = {
+      id: "local:obj",
+      state: { x: 0 },
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: null,
+    };
+
+    world.add(obj);
+
+    // Advance without anything scheduled
+    const replies = world.advance(10);
+    expect(replies.length).toBe(0);
+    expect(world.tick).toBe(10);
+  });
+
+  test("tick persists in serialization", () => {
+    const world = new World();
+    world.add({
+      id: "local:obj",
+      state: {},
+      handlers: {},
+      interface: [],
+      children: [],
+      prototype: null,
+    });
+
+    // Set tick to 42 and schedule a message at tick 50
+    world.tick = 42;
+    world.schedule.set(50, [["local:obj", { verb: "ping", payload: null }]]);
+
+    const json = world.toJSON() as any;
+
+    // Verify tick is in the JSON
+    expect(json.tick).toBe(42);
+    expect(json.schedule).toBeDefined();
+
+    // Round-trip
+    const restored = World.fromJSON(json);
+    expect(restored.tick).toBe(42);
+    expect(restored.schedule.size).toBe(1);
+    expect(restored.schedule.has(50)).toBe(true);
+    const msgs = restored.schedule.get(50)!;
+    expect(msgs.length).toBe(1);
+    expect(msgs[0][0]).toBe("local:obj");
+    expect(msgs[0][1].verb).toBe("ping");
   });
 });

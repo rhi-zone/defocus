@@ -13,18 +13,30 @@ export type Expr = Value;
 export type Identity = string;
 
 export function isRef(v: Value): boolean {
-  return (
-    v !== null &&
-    typeof v === "object" &&
-    !Array.isArray(v) &&
-    "$ref" in v &&
-    typeof v.$ref === "string" &&
-    Object.keys(v).length === 1
-  );
+  if (
+    v === null ||
+    typeof v !== "object" ||
+    Array.isArray(v) ||
+    !("$ref" in v) ||
+    typeof v.$ref !== "string"
+  ) return false;
+  const keys = Object.keys(v);
+  if (keys.length === 1) return true;
+  if (keys.length === 2 && "$verbs" in v && Array.isArray(v.$verbs)) return true;
+  return false;
 }
 
 export function asRef(v: Value): string | undefined {
   if (isRef(v)) return (v as { $ref: string }).$ref;
+  return undefined;
+}
+
+export function refVerbs(v: Value): string[] | undefined {
+  if (!isRef(v)) return undefined;
+  const rec = v as { $ref: string; $verbs?: Value };
+  if ("$verbs" in rec && Array.isArray(rec.$verbs)) {
+    return rec.$verbs.filter((x): x is string => typeof x === "string");
+  }
   return undefined;
 }
 

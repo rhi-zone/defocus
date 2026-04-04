@@ -18,7 +18,8 @@ export interface DefocusObject {
 
 export type Effect =
   | { type: "set"; key: string; value: Value }
-  | { type: "send"; to: Identity; message: Message }
+  | { type: "send"; to: Identity; allowedVerbs?: string[]; message: Message }
+  | { type: "schedule"; at: number; to: Identity; message: Message }
   | { type: "spawn"; object: DefocusObject }
   | { type: "remove"; id: Identity }
   | { type: "reply"; value: Value };
@@ -33,6 +34,8 @@ export function stub(id: Identity, verbs: string[]): DefocusObject {
 
 export class World {
   objects = new Map<Identity, DefocusObject>();
+  tick = 0;
+  schedule = new Map<number, Array<[Identity, Message]>>();
   queue: Array<[Identity, Message, Identity | undefined]> = [];
   log: EventLog | null = null;
 
@@ -100,8 +103,22 @@ export class World {
           break;
         }
         case "send":
+          // Enforce capability attenuation: if the ref had a verb filter,
+          // silently drop messages with disallowed verbs.
+          if (effect.allowedVerbs && !effect.allowedVerbs.includes(effect.message.verb)) {
+            break;
+          }
           this.queue.push([effect.to, effect.message, targetId]);
           break;
+        case "schedule": {
+          const existing = this.schedule.get(effect.at);
+          if (existing) {
+            existing.push([effect.to, effect.message]);
+          } else {
+            this.schedule.set(effect.at, [[effect.to, effect.message]]);
+          }
+          break;
+        }
         case "spawn":
           this.objects.set(effect.object.id, effect.object);
           break;
@@ -134,6 +151,43 @@ export class World {
     return allReplies;
   }
 
+  /** Advance the logical clock to toTick, delivering all scheduled messages
+   *  whose tick <= toTick. Processes them through the normal step loop.
+   *  Returns all Reply values collected. */
+  advance(toTick: number): Value[] {
+    if (toTick < this.tick) {
+      throw new Error(`cannot advance backward: current tick is ${this.tick}, requested ${toTick}`);
+    }
+    this.tick = toTick;
+
+    // Collect and remove all entries with tick <= toTick
+    const due: Array<[number, Array<[Identity, Message]>]> = [];
+    for (const [tick, messages] of this.schedule) {
+      if (tick <= toTick) {
+        due.push([tick, messages]);
+      }
+    }
+    // Sort by tick to deliver in order
+    due.sort((a, b) => a[0] - b[0]);
+    for (const [tick] of due) {
+      this.schedule.delete(tick);
+    }
+
+    // Enqueue all due messages
+    for (const [, messages] of due) {
+      for (const [to, message] of messages) {
+        this.queue.push([to, message, undefined]);
+      }
+    }
+
+    return this.drain(10_000);
+  }
+
+  /** Advance the logical clock by one tick. Convenience wrapper. */
+  advanceOne(): Value[] {
+    return this.advance(this.tick + 1);
+  }
+
   snapshot(): { [id: string]: DefocusObject } {
     return Object.fromEntries(this.objects);
   }
@@ -152,17 +206,33 @@ export class World {
       }
       objects[id] = entry;
     }
-    return { version: 1, objects };
+    const result: { [key: string]: Value } = { version: 1, objects };
+    if (this.tick > 0) {
+      result.tick = this.tick;
+    }
+    if (this.schedule.size > 0) {
+      const sched: { [tick: string]: Array<[Identity, Message]> } = {};
+      for (const [tick, msgs] of this.schedule) {
+        sched[String(tick)] = msgs;
+      }
+      result.schedule = sched;
+    }
+    return result;
   }
 
   static fromJSON(data: object): World {
-    const root = data as { version?: number; objects?: { [id: string]: {
-      state?: { [key: string]: Value };
-      handlers?: { [verb: string]: Expr };
-      interface?: string[];
-      children?: Identity[];
-      prototype?: Identity | null;
-    } } };
+    const root = data as {
+      version?: number;
+      tick?: number;
+      schedule?: { [tick: string]: Array<[Identity, { verb: string; payload: Value }]> };
+      objects?: { [id: string]: {
+        state?: { [key: string]: Value };
+        handlers?: { [verb: string]: Expr };
+        interface?: string[];
+        children?: Identity[];
+        prototype?: Identity | null;
+      } };
+    };
 
     if (root.version !== 1) {
       throw new Error(`unsupported version: ${root.version}`);
@@ -183,6 +253,21 @@ export class World {
       };
       world.add(obj);
     }
+
+    if (typeof root.tick === "number") {
+      world.tick = root.tick;
+    }
+
+    if (root.schedule && typeof root.schedule === "object") {
+      for (const [tickStr, messages] of Object.entries(root.schedule)) {
+        const tick = Number(tickStr);
+        const msgs: Array<[Identity, Message]> = messages.map(
+          ([to, msg]: [Identity, { verb: string; payload: Value }]) => [to, msg] as [Identity, Message],
+        );
+        world.schedule.set(tick, msgs);
+      }
+    }
+
     return world;
   }
 

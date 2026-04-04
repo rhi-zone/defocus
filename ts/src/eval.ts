@@ -1,5 +1,5 @@
 import type { Value, Expr } from "./value.js";
-import { isTruthy, asStr, asNum, asArray, asRecord, asRef } from "./value.js";
+import { isTruthy, asStr, asNum, asArray, asRecord, asRef, isRef, refVerbs } from "./value.js";
 import type { DefocusObject, Effect, Message } from "./world.js";
 
 interface Env {
@@ -210,6 +210,26 @@ function evalCall(op: string, args: Value[], env: Env): Value {
       return result;
     }
 
+    case "attenuate": {
+      // ["attenuate", ref-expr, ["verb1", "verb2"]]
+      if (args.length < 2) return null;
+      const refVal = evaluate(args[0], env);
+      const verbsVal = evaluate(args[1], env);
+      const newVerbsArr = asArray(verbsVal);
+      if (!newVerbsArr || !isRef(refVal)) return null;
+      const newVerbs = newVerbsArr.filter((v): v is string => typeof v === "string");
+      const existing = refVerbs(refVal);
+      const id = asRef(refVal)!;
+      const finalVerbs = existing
+        ? newVerbs.filter((v) => existing.includes(v))
+        : newVerbs;
+      const result: Value = { $ref: id };
+      if (finalVerbs.length > 0 || existing || newVerbs.length > 0) {
+        (result as any).$verbs = finalVerbs;
+      }
+      return result;
+    }
+
     case "perform": {
       const tag = asStr(args[0] as Value);
       switch (tag) {
@@ -225,11 +245,13 @@ function evalCall(op: string, args: Value[], env: Env): Value {
           if (args.length >= 4) {
             const target = evaluate(args[1], env);
             const to = asRef(target) ?? asStr(target) ?? "";
+            const allowedVerbs = isRef(target) ? refVerbs(target) : undefined;
             const verb = asStr(evaluate(args[2], env)) ?? "";
             const payload = evaluate(args[3], env);
             env.effects.push({
               type: "send",
               to,
+              allowedVerbs,
               message: { verb, payload } satisfies Message,
             });
           }
@@ -239,6 +261,23 @@ function evalCall(op: string, args: Value[], env: Env): Value {
           if (args.length >= 2) {
             const value = evaluate(args[1], env);
             env.effects.push({ type: "reply", value });
+          }
+          break;
+        }
+        case "schedule": {
+          // ["perform", "schedule", tick-expr, ref-or-id, verb, payload]
+          if (args.length >= 5) {
+            const at = asNum(evaluate(args[1], env)) ?? 0;
+            const target = evaluate(args[2], env);
+            const to = asRef(target) ?? asStr(target) ?? "";
+            const verb = asStr(evaluate(args[3], env)) ?? "";
+            const payload = evaluate(args[4], env);
+            env.effects.push({
+              type: "schedule",
+              at,
+              to,
+              message: { verb, payload } satisfies Message,
+            });
           }
           break;
         }

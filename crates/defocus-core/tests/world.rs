@@ -860,3 +860,371 @@ fn event_log_serialization_roundtrip() {
     assert_eq!(restored.events[0].replies, vec![Value::Int(1)]);
     assert_eq!(restored.events[1].replies, vec![Value::Int(2)]);
 }
+
+// --- Capability Attenuation Tests ---
+
+#[test]
+fn attenuated_ref_allows_permitted_verb() {
+    let mut world = World::new();
+
+    // Door has an attenuated ref to frame that only allows "door-opened"
+    let door = Object::new("local:door")
+        .with_attenuated_ref("frame", "local:frame", vec!["door-opened".into()])
+        .with_handler(
+            "open",
+            val(json!([
+                "do",
+                ["perform", "set", "open", true],
+                [
+                    "perform",
+                    "send",
+                    ["get-in", ["get", "state"], "frame"],
+                    "door-opened",
+                    null
+                ]
+            ])),
+        );
+
+    let frame = Object::new("local:frame")
+        .with_state("doorOpen", false)
+        .with_handler(
+            "door-opened",
+            val(json!(["perform", "set", "doorOpen", true])),
+        );
+
+    world.add(door);
+    world.add(frame);
+    send(&mut world, "local:door", "open", Value::Null);
+
+    assert_eq!(world.objects["local:door"].state["open"], Value::Bool(true));
+    assert_eq!(
+        world.objects["local:frame"].state["doorOpen"],
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn attenuated_ref_blocks_forbidden_verb() {
+    let mut world = World::new();
+
+    // Door has an attenuated ref to frame that only allows "door-opened"
+    let door = Object::new("local:door")
+        .with_attenuated_ref("frame", "local:frame", vec!["door-opened".into()])
+        .with_handler(
+            "reset",
+            val(json!([
+                "perform",
+                "send",
+                ["get-in", ["get", "state"], "frame"],
+                "destroy",
+                null
+            ])),
+        );
+
+    let frame = Object::new("local:frame")
+        .with_state("destroyed", false)
+        .with_handler(
+            "destroy",
+            val(json!(["perform", "set", "destroyed", true])),
+        );
+
+    world.add(door);
+    world.add(frame);
+    send(&mut world, "local:door", "reset", Value::Null);
+
+    // "destroy" verb should be silently dropped — state unchanged
+    assert_eq!(
+        world.objects["local:frame"].state["destroyed"],
+        Value::Bool(false)
+    );
+}
+
+#[test]
+fn attenuate_op_restricts_further() {
+    let mut world = World::new();
+
+    // Object starts with unrestricted ref, attenuates to ["open", "close"],
+    // then further to ["open"]. Sends "close" → should be dropped.
+    let obj = Object::new("local:obj")
+        .with_ref("target", "local:target")
+        .with_handler(
+            "test",
+            val(json!([
+                "do",
+                // First attenuate to open+close
+                ["let", "narrow",
+                    ["attenuate", ["get-in", ["get", "state"], "target"], ["array", "open", "close"]],
+                    // Then attenuate further to just open
+                    ["let", "narrower",
+                        ["attenuate", ["get", "narrow"], ["array", "open"]],
+                        // Try sending "close" via the narrower ref
+                        ["do",
+                            ["perform", "send", ["get", "narrower"], "close", null],
+                            // Also send "open" — should succeed
+                            ["perform", "send", ["get", "narrower"], "open", null]
+                        ]
+                    ]
+                ]
+            ])),
+        );
+
+    let target = Object::new("local:target")
+        .with_state("opened", false)
+        .with_state("closed", false)
+        .with_handler(
+            "open",
+            val(json!(["perform", "set", "opened", true])),
+        )
+        .with_handler(
+            "close",
+            val(json!(["perform", "set", "closed", true])),
+        );
+
+    world.add(obj);
+    world.add(target);
+    send(&mut world, "local:obj", "test", Value::Null);
+
+    // "close" should be dropped, "open" should succeed
+    assert_eq!(
+        world.objects["local:target"].state["opened"],
+        Value::Bool(true)
+    );
+    assert_eq!(
+        world.objects["local:target"].state["closed"],
+        Value::Bool(false)
+    );
+}
+
+#[test]
+fn attenuated_ref_serialization_roundtrip() {
+    let mut world = World::new();
+
+    let obj = Object::new("local:obj")
+        .with_attenuated_ref("target", "local:other", vec!["open".into(), "close".into()]);
+
+    world.add(obj);
+
+    let json = world.to_json();
+
+    // Verify the attenuated ref serialization
+    let state = &json["objects"]["local:obj"]["state"]["target"];
+    assert_eq!(state["$ref"], "local:other");
+    assert_eq!(
+        state["$verbs"],
+        serde_json::json!(["open", "close"])
+    );
+
+    // Round-trip
+    let restored = World::from_json(json).unwrap();
+    let restored_obj = restored.objects.get("local:obj").unwrap();
+    assert_eq!(
+        restored_obj.state.get("target"),
+        Some(&Value::Ref {
+            id: "local:other".into(),
+            verbs: Some(vec!["open".into(), "close".into()]),
+        })
+    );
+}
+
+#[test]
+fn unrestricted_ref_still_works() {
+    // This is a backward-compat sanity check — unrestricted ref with no verbs
+    let mut world = World::new();
+
+    let door = Object::new("local:door")
+        .with_ref("frame", "local:frame")
+        .with_handler(
+            "open",
+            val(json!([
+                "do",
+                ["perform", "set", "open", true],
+                [
+                    "perform",
+                    "send",
+                    ["get-in", ["get", "state"], "frame"],
+                    "door-opened",
+                    null
+                ]
+            ])),
+        );
+
+    let frame = Object::new("local:frame")
+        .with_state("doorOpen", false)
+        .with_handler(
+            "door-opened",
+            val(json!(["perform", "set", "doorOpen", true])),
+        );
+
+    world.add(door);
+    world.add(frame);
+    send(&mut world, "local:door", "open", Value::Null);
+
+    assert_eq!(world.objects["local:door"].state["open"], Value::Bool(true));
+    assert_eq!(
+        world.objects["local:frame"].state["doorOpen"],
+        Value::Bool(true)
+    );
+}
+
+// --- Scheduler Tests ---
+
+#[test]
+fn schedule_and_advance() {
+    let mut world = World::new();
+
+    let obj = Object::new("local:obj")
+        .with_state("received", false)
+        .with_handler(
+            "ping",
+            val(json!(["perform", "set", "received", true])),
+        );
+
+    world.add(obj);
+
+    // Schedule a message at tick 5
+    world.schedule.entry(5).or_default().push((
+        "local:obj".into(),
+        Message {
+            verb: "ping".into(),
+            payload: Value::Null,
+        },
+    ));
+
+    // Advance to tick 4 — not yet delivered
+    world.advance(4);
+    assert_eq!(
+        world.objects["local:obj"].state["received"],
+        Value::Bool(false)
+    );
+
+    // Advance to tick 5 — delivered
+    world.advance(5);
+    assert_eq!(
+        world.objects["local:obj"].state["received"],
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn schedule_multiple_ticks() {
+    let mut world = World::new();
+
+    let obj = Object::new("local:obj")
+        .with_state("count", Value::Int(0))
+        .with_handler(
+            "bump",
+            val(json!([
+                "perform", "set", "count",
+                ["+", ["get-in", ["get", "state"], "count"], 1]
+            ])),
+        );
+
+    world.add(obj);
+
+    // Schedule at tick 3 and tick 7
+    world.schedule.entry(3).or_default().push((
+        "local:obj".into(),
+        Message {
+            verb: "bump".into(),
+            payload: Value::Null,
+        },
+    ));
+    world.schedule.entry(7).or_default().push((
+        "local:obj".into(),
+        Message {
+            verb: "bump".into(),
+            payload: Value::Null,
+        },
+    ));
+
+    // Advance to 5 — only tick 3 fires
+    world.advance(5);
+    assert_eq!(world.objects["local:obj"].state["count"], Value::Int(1));
+
+    // Advance to 10 — tick 7 fires
+    world.advance(10);
+    assert_eq!(world.objects["local:obj"].state["count"], Value::Int(2));
+}
+
+#[test]
+fn schedule_from_handler() {
+    let mut world = World::new();
+
+    // Object A schedules a delayed message to object B
+    let a = Object::new("local:a").with_handler(
+        "trigger",
+        val(json!([
+            "perform", "schedule", 5, "local:b", "ping", null
+        ])),
+    );
+
+    let b = Object::new("local:b")
+        .with_state("pinged", false)
+        .with_handler(
+            "ping",
+            val(json!(["perform", "set", "pinged", true])),
+        );
+
+    world.add(a);
+    world.add(b);
+
+    // Send trigger — this schedules the message, doesn't deliver it yet
+    send(&mut world, "local:a", "trigger", Value::Null);
+    assert_eq!(
+        world.objects["local:b"].state["pinged"],
+        Value::Bool(false)
+    );
+
+    // Advance to tick 5 — now it fires
+    world.advance(5);
+    assert_eq!(
+        world.objects["local:b"].state["pinged"],
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn advance_without_scheduled_messages() {
+    let mut world = World::new();
+
+    let obj = Object::new("local:obj").with_state("x", Value::Int(0));
+
+    world.add(obj);
+
+    // Advance without anything scheduled
+    let replies = world.advance(10);
+    assert!(replies.is_empty());
+    assert_eq!(world.tick, 10);
+}
+
+#[test]
+fn tick_persists_in_serialization() {
+    let mut world = World::new();
+    world.add(Object::new("local:obj"));
+
+    // Set tick to 42 and schedule a message at tick 50
+    world.tick = 42;
+    world.schedule.entry(50).or_default().push((
+        "local:obj".into(),
+        Message {
+            verb: "ping".into(),
+            payload: Value::Null,
+        },
+    ));
+
+    let json = world.to_json();
+
+    // Verify tick is in the JSON
+    assert_eq!(json["tick"], 42);
+    assert!(json["schedule"].is_object());
+
+    // Round-trip
+    let restored = World::from_json(json).unwrap();
+    assert_eq!(restored.tick, 42);
+    assert_eq!(restored.schedule.len(), 1);
+    assert!(restored.schedule.contains_key(&50));
+    let msgs = &restored.schedule[&50];
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].0, "local:obj");
+    assert_eq!(msgs[0].1.verb, "ping");
+}

@@ -148,7 +148,10 @@ mod tests {
         assert_eq!(loaded.objects["local:test"].state["x"], Value::Int(42));
         assert_eq!(
             loaded.objects["local:test"].state["friend"],
-            Value::Ref("local:other".into())
+            Value::Ref {
+                id: "local:other".into(),
+                verbs: None
+            }
         );
     }
 

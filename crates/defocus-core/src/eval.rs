@@ -46,11 +46,20 @@ pub fn eval_handler(
     sender: Option<&str>,
 ) -> Vec<Effect> {
     let mut env = Env::new();
-    env.bind("self".into(), Value::Ref(self_id.to_string()));
+    env.bind(
+        "self".into(),
+        Value::Ref {
+            id: self_id.to_string(),
+            verbs: None,
+        },
+    );
     env.bind(
         "sender".into(),
         match sender {
-            Some(id) => Value::Ref(id.to_string()),
+            Some(id) => Value::Ref {
+                id: id.to_string(),
+                verbs: None,
+            },
             None => Value::Null,
         },
     );
@@ -63,7 +72,7 @@ pub fn eval_handler(
 fn eval(expr: &Expr, env: &mut Env) -> Value {
     match expr {
         Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => expr.clone(),
-        Value::String(_) | Value::Ref(_) => expr.clone(),
+        Value::String(_) | Value::Ref { .. } => expr.clone(),
         Value::Record(r) => {
             let mut result = BTreeMap::new();
             for (k, v) in r {
@@ -279,6 +288,45 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
             result
         }
 
+        // Capability attenuation
+        "attenuate" => {
+            // ["attenuate", ref-expr, ["verb1", "verb2"]]
+            if args.len() < 2 {
+                return Value::Null;
+            }
+            let ref_val = eval(&args[0], env);
+            let verbs_val = eval(&args[1], env);
+            let Some(new_verbs_arr) = verbs_val.as_array() else {
+                return Value::Null;
+            };
+            let new_verbs: Vec<String> = new_verbs_arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            match ref_val {
+                Value::Ref {
+                    id,
+                    verbs: existing,
+                } => {
+                    let final_verbs = match existing {
+                        None => new_verbs,
+                        Some(existing_verbs) => {
+                            // Intersection: only keep verbs in both lists
+                            new_verbs
+                                .into_iter()
+                                .filter(|v| existing_verbs.contains(v))
+                                .collect()
+                        }
+                    };
+                    Value::Ref {
+                        id,
+                        verbs: Some(final_verbs),
+                    }
+                }
+                _ => Value::Null,
+            }
+        }
+
         // Effects
         "perform" => {
             let tag = args[0].as_str().unwrap_or("unknown");
@@ -293,15 +341,21 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                 "send" => {
                     if args.len() >= 4 {
                         let target = eval(&args[1], env);
-                        let to: Identity = target
-                            .as_ref_id()
-                            .or_else(|| target.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        // Extract both the ID and verb filter from the ref
+                        let (to, allowed_verbs): (Identity, Option<Vec<String>>) = match &target {
+                            Value::Ref { id, verbs } => {
+                                (id.clone(), verbs.clone())
+                            }
+                            _ => {
+                                let id = target.as_str().unwrap_or("").to_string();
+                                (id, None)
+                            }
+                        };
                         let verb = eval(&args[2], env).as_str().unwrap_or("").to_string();
                         let payload = eval(&args[3], env);
                         env.effects.push(Effect::Send {
                             to,
+                            allowed_verbs,
                             message: Message { verb, payload },
                         });
                     }
@@ -321,6 +375,27 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                             .unwrap_or("")
                             .to_string();
                         env.effects.push(Effect::Remove { id });
+                    }
+                }
+                "schedule" => {
+                    // ["perform", "schedule", tick-expr, ref-or-id, verb, payload]
+                    if args.len() >= 5 {
+                        let at = eval(&args[1], env)
+                            .as_i64()
+                            .unwrap_or(0) as u64;
+                        let target = eval(&args[2], env);
+                        let to: Identity = target
+                            .as_ref_id()
+                            .or_else(|| target.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let verb = eval(&args[3], env).as_str().unwrap_or("").to_string();
+                        let payload = eval(&args[4], env);
+                        env.effects.push(Effect::Schedule {
+                            at,
+                            to,
+                            message: Message { verb, payload },
+                        });
                     }
                 }
                 "spawn" => {
@@ -368,7 +443,10 @@ fn eval_call(op: &str, args: &[Value], env: &mut Env) -> Value {
                                 prototype,
                             };
                             env.effects.push(Effect::Spawn { object });
-                            return Value::Ref(id);
+                            return Value::Ref {
+                                id,
+                                verbs: None,
+                            };
                         }
                     }
                 }
@@ -453,7 +531,7 @@ fn match_pattern(pattern: &Value, scrutinee: &Value, env: &mut Env) -> bool {
             })
         }
         // Ref literal match
-        Value::Ref(_) => pattern == scrutinee,
+        Value::Ref { .. } => pattern == scrutinee,
     }
 }
 
@@ -565,9 +643,14 @@ mod tests {
         let effects = eval_handler(&handler, &Value::Null, &Value::Null, "", None);
         assert_eq!(effects.len(), 2);
         match &effects[1] {
-            Effect::Send { to, message } => {
+            Effect::Send {
+                to,
+                allowed_verbs,
+                message,
+            } => {
                 assert_eq!(to, "local:frame");
                 assert_eq!(message.verb, "opened");
+                assert!(allowed_verbs.is_none());
             }
             _ => panic!("expected Send"),
         }

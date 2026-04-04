@@ -41,7 +41,29 @@ impl Object {
     }
 
     pub fn with_ref(mut self, key: impl Into<String>, target_id: impl Into<String>) -> Self {
-        self.state.insert(key.into(), Value::Ref(target_id.into()));
+        self.state.insert(
+            key.into(),
+            Value::Ref {
+                id: target_id.into(),
+                verbs: None,
+            },
+        );
+        self
+    }
+
+    pub fn with_attenuated_ref(
+        mut self,
+        key: impl Into<String>,
+        target_id: impl Into<String>,
+        verbs: Vec<String>,
+    ) -> Self {
+        self.state.insert(
+            key.into(),
+            Value::Ref {
+                id: target_id.into(),
+                verbs: Some(verbs),
+            },
+        );
         self
     }
 
@@ -74,7 +96,16 @@ impl Object {
 #[derive(Debug, Clone)]
 pub enum Effect {
     SetState { key: String, value: Value },
-    Send { to: Identity, message: Message },
+    Send {
+        to: Identity,
+        allowed_verbs: Option<Vec<String>>,
+        message: Message,
+    },
+    Schedule {
+        at: u64,
+        to: Identity,
+        message: Message,
+    },
     Spawn { object: Object },
     Remove { id: Identity },
     Reply { value: Value },
@@ -83,6 +114,10 @@ pub enum Effect {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct World {
     pub objects: BTreeMap<Identity, Object>,
+    #[serde(default)]
+    pub tick: u64,
+    #[serde(default)]
+    pub schedule: BTreeMap<u64, Vec<(Identity, Message)>>,
     #[serde(skip)]
     pub queue: VecDeque<(Identity, Message, Option<Identity>)>,
     #[serde(skip)]
@@ -93,6 +128,8 @@ impl World {
     pub fn new() -> Self {
         World {
             objects: BTreeMap::new(),
+            tick: 0,
+            schedule: BTreeMap::new(),
             queue: VecDeque::new(),
             log: None,
         }
@@ -175,8 +212,22 @@ impl World {
                         obj.state.insert(key, value);
                     }
                 }
-                Effect::Send { to, message } => {
+                Effect::Send {
+                    to,
+                    allowed_verbs,
+                    message,
+                } => {
+                    // Enforce capability attenuation: if the ref had a verb filter,
+                    // silently drop messages with disallowed verbs.
+                    if let Some(ref verbs) = allowed_verbs {
+                        if !verbs.iter().any(|v| v == &message.verb) {
+                            continue;
+                        }
+                    }
                     self.queue.push_back((to, message, Some(target_id.clone())));
+                }
+                Effect::Schedule { at, to, message } => {
+                    self.schedule.entry(at).or_default().push((to, message));
                 }
                 Effect::Spawn { object } => {
                     self.objects.insert(object.id.clone(), object);
@@ -215,6 +266,37 @@ impl World {
         }
         all_replies
     }
+
+    /// Advance the logical clock to `to_tick`, delivering all scheduled messages
+    /// whose tick <= `to_tick`. Processes them through the normal step loop.
+    /// Returns all Reply values collected.
+    pub fn advance(&mut self, to_tick: u64) -> Vec<Value> {
+        assert!(
+            to_tick >= self.tick,
+            "cannot advance backward: current tick is {}, requested {}",
+            self.tick,
+            to_tick
+        );
+        self.tick = to_tick;
+
+        // Collect all scheduled entries up to and including to_tick.
+        // We split_off at to_tick+1 to keep everything after to_tick in self.schedule.
+        let remaining = self.schedule.split_off(&(to_tick + 1));
+        let due = std::mem::replace(&mut self.schedule, remaining);
+
+        for (_tick, messages) in due {
+            for (to, message) in messages {
+                self.queue.push_back((to, message, None));
+            }
+        }
+
+        self.drain(10_000)
+    }
+
+    /// Advance the logical clock by one tick. Convenience wrapper.
+    pub fn advance_one(&mut self) -> Vec<Value> {
+        self.advance(self.tick + 1)
+    }
 }
 
 impl World {
@@ -249,10 +331,17 @@ impl World {
             objects.insert(id.clone(), serde_json::Value::Object(entry));
         }
 
-        serde_json::json!({
+        let mut root = serde_json::json!({
             "version": 1,
             "objects": objects,
-        })
+        });
+        if self.tick > 0 {
+            root["tick"] = serde_json::json!(self.tick);
+        }
+        if !self.schedule.is_empty() {
+            root["schedule"] = serde_json::to_value(&self.schedule).unwrap();
+        }
+        root
     }
 
     /// Deserialize a world from the JSON format produced by `to_json`.
@@ -320,6 +409,16 @@ impl World {
                 children,
                 prototype,
             });
+        }
+
+        world.tick = root
+            .get("tick")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        if let Some(sched_val) = root.get("schedule") {
+            world.schedule = serde_json::from_value(sched_val.clone())
+                .map_err(|e| format!("invalid schedule: {e}"))?;
         }
 
         Ok(world)
@@ -470,7 +569,10 @@ mod tests {
 
         assert_eq!(
             world.objects.get("local:b").unwrap().state.get("got-self"),
-            Some(&Value::Ref("local:b".into()))
+            Some(&Value::Ref {
+                id: "local:b".into(),
+                verbs: None
+            })
         );
         assert_eq!(
             world
@@ -479,7 +581,10 @@ mod tests {
                 .unwrap()
                 .state
                 .get("got-sender"),
-            Some(&Value::Ref("local:a".into()))
+            Some(&Value::Ref {
+                id: "local:a".into(),
+                verbs: None
+            })
         );
     }
 
@@ -588,7 +693,10 @@ mod tests {
         );
         assert_eq!(
             restored_room.state.get("door"),
-            Some(&Value::Ref("local:door".into()))
+            Some(&Value::Ref {
+                id: "local:door".into(),
+                verbs: None
+            })
         );
         assert_eq!(restored_room.interface, vec!["look"]);
         assert_eq!(restored_room.children, vec!["local:door"]);
@@ -604,7 +712,10 @@ mod tests {
 
     #[test]
     fn test_ref_serde_roundtrip() {
-        let v = Value::Ref("local:frame".into());
+        let v = Value::Ref {
+            id: "local:frame".into(),
+            verbs: None,
+        };
         let json = serde_json::to_string(&v).unwrap();
         assert_eq!(json, r#"{"$ref":"local:frame"}"#);
         let parsed: Value = serde_json::from_str(&json).unwrap();
