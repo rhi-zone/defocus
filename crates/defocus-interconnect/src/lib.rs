@@ -2,18 +2,10 @@
 //!
 //! Exposes a defocus [`World`] as an Interconnect room, allowing multiplayer
 //! interaction through the Authority protocol.
-//!
-//! # Dependency note
-//!
-//! This crate is designed to implement `interconnect_core::Authority` (via the
-//! `SimpleAuthority` blanket impl). The `interconnect-core` dependency is
-//! currently commented out in `Cargo.toml` because it is not yet published on
-//! crates.io, and the ecosystem prohibits path dependencies. The adapter types
-//! and logic are fully implemented; only the trait impl block is stubbed as a
-//! comment.
 
 use defocus_core::value::Value;
-use defocus_core::world::{Message, World};
+use defocus_core::world::{Message, Object, World};
+use interconnect_core::{ImportResult, Session, SimpleAuthority};
 use std::collections::HashMap;
 
 /// A player's message to the world.
@@ -138,7 +130,7 @@ impl DefocusAuthority {
     ///
     /// Then sends the message and drains the world queue, returning a snapshot
     /// with the collected replies.
-    pub fn handle_intent(
+    pub fn handle_intent_from(
         &mut self,
         player_id: &str,
         intent: WorldIntent,
@@ -224,71 +216,64 @@ fn find_ref_to(
     None
 }
 
-// ---------------------------------------------------------------------------
-// Interconnect Authority trait impl (stubbed)
-// ---------------------------------------------------------------------------
-//
-// When interconnect-core is available as a crate dependency, uncomment the
-// dependency in Cargo.toml and replace this comment block with:
-//
-// impl interconnect_core::authority::SimpleAuthority for DefocusAuthority {
-//     type Intent = WorldIntent;
-//     type Snapshot = WorldSnapshot;
-//     type Passport = PlayerPassport;
-//     type Error = AuthorityError;
-//
-//     fn on_connect(&mut self, session: &interconnect_core::authority::Session) -> Result<(), Self::Error> {
-//         // Create or look up an avatar object for this session.
-//         // For now, the caller must pre-register via add_player().
-//         Ok(())
-//     }
-//
-//     fn on_transfer_in(
-//         &mut self,
-//         session: &interconnect_core::authority::Session,
-//         passport: PlayerPassport,
-//     ) -> Result<interconnect_core::authority::ImportResult<PlayerPassport>, Self::Error> {
-//         // Apply import policy: accept the passport state, create avatar.
-//         self.add_player(&passport.player_id, &format!("player:{}", passport.player_id));
-//         let mut avatar = Object::new(format!("player:{}", passport.player_id));
-//         for (k, v) in &passport.state {
-//             avatar = avatar.with_state(k.clone(), v.clone());
-//         }
-//         self.world.add(avatar);
-//         Ok(interconnect_core::authority::ImportResult::accept(passport))
-//     }
-//
-//     fn on_disconnect(&mut self, session: &interconnect_core::authority::Session) {
-//         self.remove_player(&session.identity);
-//     }
-//
-//     fn handle_intent(
-//         &mut self,
-//         session: &interconnect_core::authority::Session,
-//         intent: WorldIntent,
-//     ) -> Result<(), Self::Error> {
-//         self.handle_intent(&session.identity, intent)?;
-//         Ok(())
-//     }
-//
-//     fn snapshot(&self) -> WorldSnapshot {
-//         self.snapshot()
-//     }
-//
-//     fn emit_passport(&self, session: &interconnect_core::authority::Session) -> PlayerPassport {
-//         let player_id = session.identity.clone();
-//         let state = self.players.get(&player_id)
-//             .and_then(|obj_id| self.world.objects.get(obj_id))
-//             .map(|obj| obj.state.clone())
-//             .unwrap_or_default();
-//         PlayerPassport { player_id, state }
-//     }
-//
-//     fn validate_destination(&self, _destination: &str) -> bool {
-//         // Accept any destination for now.
-//         true
-//     }
-// }
+impl SimpleAuthority for DefocusAuthority {
+    type Intent = WorldIntent;
+    type Snapshot = WorldSnapshot;
+    type Passport = PlayerPassport;
+    type Error = AuthorityError;
+
+    fn on_connect(&mut self, _session: &Session) -> Result<(), Self::Error> {
+        // Caller must pre-register players via add_player().
+        Ok(())
+    }
+
+    fn on_transfer_in(
+        &mut self,
+        _session: &Session,
+        passport: PlayerPassport,
+    ) -> Result<ImportResult<PlayerPassport>, Self::Error> {
+        let avatar_id = format!("player:{}", passport.player_id);
+        self.add_player(&passport.player_id, &avatar_id);
+        let mut avatar = Object::new(&avatar_id);
+        for (k, v) in &passport.state {
+            avatar = avatar.with_state(k.clone(), v.clone());
+        }
+        self.world.add(avatar);
+        Ok(ImportResult::accept(passport))
+    }
+
+    fn on_disconnect(&mut self, session: &Session) {
+        self.remove_player(&session.identity.to_string());
+    }
+
+    fn handle_intent(
+        &mut self,
+        session: &Session,
+        intent: WorldIntent,
+    ) -> Result<(), Self::Error> {
+        self.handle_intent_from(&session.identity.to_string(), intent)?;
+        Ok(())
+    }
+
+    fn snapshot(&self) -> WorldSnapshot {
+        DefocusAuthority::snapshot(self)
+    }
+
+    fn emit_passport(&self, session: &Session) -> PlayerPassport {
+        let player_id = session.identity.to_string();
+        let state = self
+            .players
+            .get(&player_id)
+            .and_then(|obj_id| self.world.objects.get(obj_id))
+            .map(|obj| obj.state.clone())
+            .unwrap_or_default();
+        PlayerPassport { player_id, state }
+    }
+
+    fn validate_destination(&self, _destination: &str) -> bool {
+        true
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -352,7 +337,7 @@ mod tests {
         authority.add_player("alice", &avatar_id);
 
         let snapshot = authority
-            .handle_intent(
+            .handle_intent_from(
                 "alice",
                 WorldIntent {
                     target: npc_id.clone(),
@@ -383,7 +368,7 @@ mod tests {
 
         // Players can always message their own avatar.
         let snapshot = authority
-            .handle_intent(
+            .handle_intent_from(
                 "alice",
                 WorldIntent {
                     target: avatar_id.clone(),
@@ -404,7 +389,7 @@ mod tests {
         let mut authority = DefocusAuthority::new(world);
         // Don't register any player.
 
-        let result = authority.handle_intent(
+        let result = authority.handle_intent_from(
             "nobody",
             WorldIntent {
                 target: npc_id,
@@ -436,7 +421,7 @@ mod tests {
                 val(serde_json::json!(["perform", "reply", "you shouldn't see this"])),
             ));
 
-        let result = authority.handle_intent(
+        let result = authority.handle_intent_from(
             "alice",
             WorldIntent {
                 target: "local:hidden".into(),
@@ -460,7 +445,7 @@ mod tests {
         let mut authority = DefocusAuthority::new(world);
         authority.add_player("alice", &avatar_id);
 
-        let result = authority.handle_intent(
+        let result = authority.handle_intent_from(
             "alice",
             WorldIntent {
                 target: "local:nonexistent".into(),
@@ -493,7 +478,7 @@ mod tests {
 
         // Alice greets the NPC.
         let snap1 = authority
-            .handle_intent(
+            .handle_intent_from(
                 "alice",
                 WorldIntent {
                     target: npc_id.clone(),
@@ -511,7 +496,7 @@ mod tests {
 
         // Bob asks the NPC something — NPC mood should already be "happy" from Alice's greet.
         let snap2 = authority
-            .handle_intent(
+            .handle_intent_from(
                 "bob",
                 WorldIntent {
                     target: npc_id.clone(),
@@ -542,7 +527,7 @@ mod tests {
 
         // Works before removal.
         assert!(authority
-            .handle_intent(
+            .handle_intent_from(
                 "alice",
                 WorldIntent {
                     target: npc_id.clone(),
@@ -557,7 +542,7 @@ mod tests {
         // Remove and verify failure.
         authority.remove_player("alice");
 
-        let result = authority.handle_intent(
+        let result = authority.handle_intent_from(
             "alice",
             WorldIntent {
                 target: npc_id,
@@ -602,7 +587,7 @@ mod tests {
 
         // "look" should work.
         let snap = authority
-            .handle_intent(
+            .handle_intent_from(
                 "alice",
                 WorldIntent {
                     target: "local:npc".into(),
@@ -619,7 +604,7 @@ mod tests {
         );
 
         // "steal" should be denied.
-        let result = authority.handle_intent(
+        let result = authority.handle_intent_from(
             "alice",
             WorldIntent {
                 target: "local:npc".into(),

@@ -15,7 +15,18 @@ name = "defocus-interconnect"
 version = "0.1.0"
 dependencies = [
  "defocus-core",
+ "interconnect-core",
  "serde_json",
+]
+
+[[package]]
+name = "interconnect-core"
+version = "0.1.0"
+source = "git+https://github.com/rhi-zone/interconnect.git#3108b76fed1679858e5860b61bd84cd134873f77"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -100,6 +111,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
