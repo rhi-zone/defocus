@@ -121,7 +121,7 @@ Expressions are JSON values. An array with a string first element is a function 
 |----|------|-------------|
 | `if` | `["if", cond, then, else?]` | Conditional |
 | `do` | `["do", expr, ...]` | Sequential execution |
-| `match` | `["match", scrutinee, [pattern, body], ...]` | Pattern matching |
+| `match` | `["match", scrutinee, [pattern, body], ...]` | Pattern matching. Patterns: `"_"` wildcard, `"$name"` binding, other strings/primitives are literal, arrays/records structural. |
 | `while` | `["while", cond, body]` | Loop with condition |
 | `for` | `["for", var, iterable, body]` | Iterate over array |
 | `loop` | `["loop", body]` | Infinite loop (exit with `break`) |
