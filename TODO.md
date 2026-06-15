@@ -19,3 +19,14 @@ git add CLAUDE.md
 git commit -m "docs(claude): sync ecosystem rules — drop harness-management bullets"
 git push
 ```
+
+## Pending: ecosystem skill seeding (deferred — repo was dirty 2026-06-16)
+
+`github-io/tooling/sync-skills.sh` skipped this repo (dirty tree). As an rhi-zone developer-substrate
+recipient, defocus should receive all 8 canonical skills: the all-tier set (design-it-twice, handoff,
+polish, survey-open-threads, think-with-the-engineering-taste) plus the dev-tier trio
+(design-an-interface, domain-model, improve-codebase-architecture). Re-run when clean:
+
+```sh
+sh ~/git/rhizone/github-io/tooling/sync-skills.sh
+```
