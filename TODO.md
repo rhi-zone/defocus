@@ -30,3 +30,10 @@ polish, survey-open-threads, think-with-the-engineering-taste) plus the dev-tier
 ```sh
 sh ~/git/rhizone/github-io/tooling/sync-skills.sh
 ```
+
+- [ ] Re-run ecosystem CLAUDE.md propagation (relay/blackboard discipline added upstream)
+
+- [ ] install committed orchestrator hooks (was global, now per-repo)
+
+- [ ] run unified harness sync (CLAUDE.md region + portable hooks)
+- [ ] sync ecosystem harness/CLAUDE.md region: run github-io/tooling/propagate-harness-all.sh once clean
