@@ -69,95 +69,67 @@ cargo clippy       # Lint
 cd docs && bun dev # Local docs
 ```
 
-## Core Rules
-
-**docs/ reflects current architecture, not historical architecture.** When code changes, docs/ changes with it — in the same commit. New pages go in the sidebar immediately. The code and docs are one artifact.
-
-**Note things down immediately — no deferral:**
-- Problems, tech debt, issues → TODO.md now, in the same response
-- Design decisions, key insights → docs/ or CLAUDE.md
-- Future/deferred scope → TODO.md **before** writing any code, not after
-- **Every observed problem → TODO.md. No exceptions.** Code comments and conversation mentions are not tracked items. If you write a TODO comment in source, the next action is to open TODO.md and write the entry.
-
-**Conversation is not memory.** Anything said in chat evaporates at session end. If it implies a future behavior change, write it to CLAUDE.md immediately — or it will not happen.
-
-**Warning — these phrases mean something needs to be written down right now:**
-- "I won't do X again" / "I'll remember to..." / "I've learned that..."
-- "Next time I'll..." / "From now on I'll..."
-- Any acknowledgement of a recurring error without a corresponding CLAUDE.md edit
-
-**Triggers:** User corrects you, 2+ failed attempts, "aha" moment, framework quirk discovered → document before proceeding.
-
-**When the user corrects you:** Ask what rule would have prevented this, and write it before proceeding. **"The rule exists, I just didn't follow it" is never the diagnosis** — a rule that doesn't prevent the failure it describes is incomplete; fix the rule, not your behavior.
-
-**Corrections are documentation lag, not model failure.** When the same mistake recurs, the fix is writing the invariant down — not repeating the correction. Every correction that doesn't produce a CLAUDE.md edit will happen again. Exception: during active design, corrections are the work itself — don't prematurely document a design that hasn't settled yet.
-
-**Something unexpected is a signal, not noise.** Surprising output, anomalous numbers, files containing what they shouldn't — stop and ask why before continuing. Don't accept anomalies and move on.
-
-**Do the work properly.** Don't leave workarounds or hacks undocumented. When asked to analyze X, actually read X — don't synthesize from conversation.
-
-## Design Principles
-
-**Unify, don't multiply.** One interface for multiple cases > separate interfaces. Plugin systems > hardcoded switches.
-
-**Simplicity over cleverness.** HashMap > inventory crate. OnceLock > lazy_static. Functions > traits until you need the trait. Use ecosystem tooling over hand-rolling.
-
-**Explicit over implicit.** Log when skipping. Show what's at stake before refusing.
-
-**Separate niche from shared.** Don't bloat shared config with feature-specific data. Use separate files for specialized data.
+If a tool appears missing, you are outside `nix develop`. Do not assume the tool is unavailable to the project.
 
 ## Workflow
 
-**Batch cargo commands** to minimize round-trips:
+Batch checks to minimize round-trips:
 ```bash
 cargo clippy --all-targets --all-features -- -D warnings && cargo test
 ```
-After editing multiple files, run the full check once — not after each edit. Formatting is handled automatically by the pre-commit hook (`cargo fmt`).
 
-**When making the same change across multiple crates**, edit all files first, then build once.
+After editing multiple files, run the full check once. `cargo fmt` runs in the pre-commit hook.
 
-**Minimize file churn.** When editing a file, read it once, plan all changes, and apply them in one pass. Avoid read-edit-build-fail-read-fix cycles by thinking through the complete change before starting.
+When the same change spans multiple crates, edit all files first, then build once.
 
-**`normalize view` is available** for structural outlines of files and directories:
+When editing a file, read it once, plan all changes, and apply them in one pass. Avoid read-edit-build-fail-read-fix cycles by thinking through the complete change before starting.
+
+`normalize view` gives structural outlines without pulling full file bodies into context:
 ```bash
-~/git/rhizone/normalize/target/debug/normalize view <file>    # outline with line numbers
-~/git/rhizone/normalize/target/debug/normalize view <dir>     # directory structure
+~/git/rhizone/normalize/target/debug/normalize view <file>
+~/git/rhizone/normalize/target/debug/normalize view <dir>
 ```
-
-**Always commit completed work.** After tests pass, commit immediately — don't wait to be asked. When a plan has multiple phases, commit after each phase passes. Do not accumulate changes across phases. Uncommitted work is lost work.
-
-## Context Management
-
-**Use subagents to protect the main context window.** For broad exploration or mechanical multi-file work, delegate to an Explore or general-purpose subagent rather than running searches inline. The subagent returns a distilled summary; raw tool output stays out of the main context.
-
-Rules of thumb:
-- Research tasks (investigating a question, surveying patterns) → subagent; don't pollute main context with exploratory noise
-- Searching >5 files or running >3 rounds of grep/read → use a subagent
-- Codebase-wide analysis (architecture, patterns, cross-file survey) → always subagent
-- Mechanical work across many files (applying the same change everywhere) → parallel subagents
-- Single targeted lookup (one file, one symbol) → inline is fine
 
 ## Commit Convention
 
-Use conventional commits: `type(scope): message`
+Conventional commits: `type(scope): message`
 
-Types:
-- `feat` - New feature
-- `fix` - Bug fix
-- `refactor` - Code change that neither fixes a bug nor adds a feature
-- `docs` - Documentation only
-- `chore` - Maintenance (deps, CI, etc.)
-- `test` - Adding or updating tests
+Types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`. Scope is optional but recommended for multi-crate repos.
 
-Scope is optional but recommended for multi-crate repos.
+<!-- BEGIN ECOSYSTEM RULES -->
 
-## Negative Constraints
+## Ecosystem Design Principles
 
-Do not:
-- Use Claude Code's auto-memory system (`~/.claude/projects/.../memory/`) — it is unversioned, invisible to the user, and can't be diffed or backed up. Write behavioral changes and project context directly to CLAUDE.md instead
-- Announce actions ("I will now...") - just do them
-- Leave work uncommitted
-- Use interactive git commands (`git add -p`, `git add -i`, `git rebase -i`) — these block on stdin and hang in non-interactive shells; stage files by name instead
-- Use path dependencies in Cargo.toml - causes clippy to stash changes across repos
-- Use `--no-verify` - fix the issue or fix the hook
-- Assume tools are missing - check if `nix develop` is available for the right environment
+Cross-cutting principles distilled from the ecosystem's own decisions (synthesized in `docs/decisions/throughlines.md`). Apply them when building new repos and recording decisions. (Already-encoded principles — independent-tools / no-path-deps, the delegation model, CLAUDE.md-as-control-surface — live in their own sections and are not repeated here.)
+
+- **Prefer data over code at a seam — where a faithful serialization is actually viable.** Serializable AST / struct / JSON over closures, embedded DSLs, or source text, so artifacts cache, replay, transport, and diff. The preference is conditional, not absolute: when a seam carries irreducibly heterogeneous, one-off glue whose only data form is a leaky lowest-common-denominator schema (or a "descriptor" that just wraps a closure), a code seam is the honest choice. Push to data where the representation stays faithful; don't force it where it doesn't.
+- **Library-first; projection-from-one-definition.** The typed library is the source of truth; CLI / HTTP / MCP / WebSocket / JSON surfaces are generated projections, never hand-rolled per surface.
+- **Capability security.** Hosts grant pre-opened handles; code only attenuates what it is given; nothing forges authority; allow-list over deny-list.
+- **The LLM is an oracle at the leaves, never the control loop.** Determinism is a hard invariant: seeded RNG, event-log replay, build-time-only inference. Per-query LLM in the hot loop is a defect.
+- **Trust comes from verifiable evidence, not authority.** Verbatim snippets, pinned-commit permalinks, claim→node citation — never a bare reference.
+- **Retire, don't deprecate; collapse asymmetries to primitives.** Remove backward-compat aliases rather than carry them; reduce N special cases to their irreducible primitives.
+- **Finish migrations before building on top; fence what you can't finish.** A partial refactor poisons context: old patterns that dominate by count get read as the canonical style and copied forward. Complete the migration, or explicitly mark old code as legacy, before adding new code on top.
+- **Validate against reality; tests are the spec.** Load-bearing substrates are validated against real corpora; fixtures and tests define correctness, not aspirational specs.
+
+## Hard Constraints
+
+- No `--no-verify`. Fix the issue or fix the hook.
+- No path dependencies in `Cargo.toml` — they couple repos and break independent publishing.
+- No interactive git (no `git rebase -i`, no `git add -i`, no `--no-edit` on rebase).
+- No suggesting project names. LLMs are bad at this; refine the conceptual space only.
+- No tracking cross-project issues in conversation — they go in TODO.md in the affected repo.
+- No ecosystem changes without checking all affected repos.
+- **Control surface stays self-contained and versioned.** Behavioral rules, hooks, and guidance live in-repo — versioned, diffable, propagatable. Never put them in the unversioned, machine-local `~/.claude/CLAUDE.md`; reach never justifies a non-self-contained home.
+- No assuming a tool is missing without checking `nix develop`.
+- Commit completed work in the same turn it finishes. Uncommitted work is lost work.
+
+## Meta
+
+- Something unexpected is a signal. Stop and find out why. Do not accept the anomaly and proceed.
+- Corrections from the user are conversation, not material for new rules. Rules are added when a failure mode is observed repeatedly.
+- **Confidence only when earned by tangible evidence; verify before you assert, and when you can't, say so.** Confirm a claim against the actual source — read it, run it, check it — *then* state it. If you haven't verified, say "I haven't checked," then go check or ask. Never substitute a plausible-sounding claim for a verified one. The defect is *unearned* confidence — confidence decoupled from checked evidence — and it is a defect even when the answer turns out right, because the process is identical to the confident-wrong case (a lucky guess just hides it, and trains the same habit). The inverse — hedging something you've solidly verified — is the same defect. Report what you actually checked plainly; the target is the coupling between expressed confidence and real evidence, not plainness or confidence itself. (the root failure: confabulation — asserting past your evidence.)
+- **At a decision point, generate several genuinely independent candidate approaches, weigh each, and decide where the call is yours or give a weighed recommendation where it's the user's.** For complex/architectural/high-stakes decisions this isn't optional and can't be single-shot: N options from one model pass share blind spots — reworded, not independent. Decorrelate via parallel subagents each from a different starting frame (design-it-twice / design-an-interface), then adversarial judging, then synthesis — before committing. When unsure whether a decision clears that bar, treat it as if it does. (failures: overconfidence; option-dumping; false-independence — single-shot options treated as decorrelated.)
+- **Under challenge, re-read the source and report what it literally says.** Let the answer land where the evidence puts it: hold if you were right, correct specifically if you were wrong. The new position must come from re-checking, never from the pressure. (failure: backpedaling — moving to appease.)
+- **Re-read the relevant context before acting on it.** Act from the current state, not a stale or half-formed read. (failure: stale-context action.)
+
+<!-- END ECOSYSTEM RULES -->
